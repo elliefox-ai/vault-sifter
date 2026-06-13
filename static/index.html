@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vault Sifter</title>
+    <style>
+        :root {
+            --bg: #0f0f0f;
+            --surface: #1a1a1a;
+            --surface-hover: #252525;
+            --border: #333;
+            --text: #e0e0e0;
+            --text-dim: #888;
+            --accent: #4a9eff;
+            --good: #4ec96e;
+            --warn: #f0a040;
+            --bad: #e05050;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+            overflow: hidden;
+            height: 100vh;
+        }
+
+        /* ─── Top Bar ─── */
+        .topbar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 8px 16px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            height: 52px;
+            flex-shrink: 0;
+        }
+        .topbar .logo {
+            font-weight: 700;
+            font-size: 16px;
+            white-space: nowrap;
+        }
+        .topbar .logo span { color: var(--accent); }
+        .stats {
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+        .stats b { color: var(--text); }
+
+        /* ─── Filters ─── */
+        .filters {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: auto;
+        }
+        .filters input, .filters select {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            outline: none;
+        }
+        .filters input:focus, .filters select:focus {
+            border-color: var(--accent);
+        }
+        .filters input[type="search"] { width: 200px; }
+        .btn {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 4px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: background 0.15s;
+        }
+        .btn:hover { background: var(--surface-hover); }
+        .btn.active { border-color: var(--accent); color: var(--accent); }
+
+        /* ─── Main Layout ─── */
+        .main {
+            display: flex;
+            height: calc(100vh - 52px);
+        }
+
+        /* ─── Sidebar ─── */
+        .sidebar {
+            width: 340px;
+            min-width: 340px;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            display: none;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+        .sidebar.visible { display: flex; }
+        .detail-img {
+            width: 100%;
+            display: block;
+        }
+        .detail-meta {
+            padding: 12px 16px;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .detail-meta .label { color: var(--text-dim); }
+        .detail-meta .value { color: var(--text); margin-bottom: 8px; }
+        .detail-meta .prompt-box {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            padding: 8px;
+            border-radius: 4px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: "SF Mono", "Cascadia Code", monospace;
+            font-size: 11px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .detail-actions {
+            padding: 12px 16px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        /* ─── Gallery ─── */
+        .gallery {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+        }
+        .gallery-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 8px;
+        }
+        .card {
+            position: relative;
+            border-radius: 6px;
+            overflow: hidden;
+            cursor: pointer;
+            background: var(--surface);
+            border: 2px solid transparent;
+            transition: border-color 0.1s;
+        }
+        .card:hover { border-color: var(--surface-hover); }
+        .card.selected { border-color: var(--accent); }
+        .card.rejected { opacity: 0.3; }
+        .card.flagged::after {
+            content: "⚑";
+            position: absolute;
+            top: 4px; right: 4px;
+            color: var(--warn);
+            font-size: 14px;
+            text-shadow: 0 0 4px black;
+        }
+        .card img {
+            width: 100%;
+            display: block;
+            aspect-ratio: 1;
+            object-fit: cover;
+            background: #111;
+        }
+        .card-overlay {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            background: linear-gradient(transparent, rgba(0,0,0,0.8));
+            padding: 20px 6px 4px;
+            font-size: 10px;
+            color: var(--text-dim);
+            display: flex;
+            justify-content: space-between;
+        }
+        .rating {
+            position: absolute;
+            top: 4px; left: 4px;
+            display: flex;
+            gap: 1px;
+        }
+        .rating .star {
+            color: var(--warn);
+            font-size: 10px;
+            text-shadow: 0 0 3px black;
+        }
+
+        /* ─── Compare Modal ─── */
+        .compare-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.95);
+            z-index: 100;
+            padding: 40px;
+            overflow: auto;
+        }
+        .compare-overlay.visible { display: flex; gap: 16px; align-items: flex-start; justify-content: center; }
+        .compare-img {
+            max-height: 90vh;
+            max-width: 48%;
+            object-fit: contain;
+            border-radius: 4px;
+        }
+
+        /* ─── Fullscreen Preview ─── */
+        .preview-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.95);
+            z-index: 90;
+            justify-content: center;
+            align-items: center;
+            cursor: zoom-out;
+        }
+        .preview-overlay.visible { display: flex; }
+        .preview-overlay img {
+            max-width: 95vw;
+            max-height: 95vh;
+            object-fit: contain;
+        }
+
+        /* ─── Toast ─── */
+        .toast {
+            position: fixed;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 12px;
+            opacity: 0;
+            transition: opacity 0.2s;
+            z-index: 200;
+            pointer-events: none;
+        }
+        .toast.visible { opacity: 1; }
+
+        /* ─── Empty State ─── */
+        .empty {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-dim);
+            gap: 8px;
+        }
+        .empty .big { font-size: 48px; }
+
+        /* ─── Pagination ─── */
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 12px;
+            padding: 16px;
+            color: var(--text-dim);
+            font-size: 12px;
+        }
+
+        /* ─── Keyboard Hint ─── */
+        .kbd-hint {
+            position: fixed;
+            bottom: 16px;
+            right: 16px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 10px;
+            color: var(--text-dim);
+            z-index: 50;
+        }
+        .kbd-hint kbd {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            padding: 1px 4px;
+            font-family: monospace;
+            font-size: 10px;
+            color: var(--text);
+        }
+    </style>
+</head>
+<body>
+
+<div class="topbar">
+    <div class="logo">Vault<span>Sifter</span></div>
+    <div class="stats">
+        <span>Total: <b id="stat-total">—</b></span>
+        <span>Unrated: <b id="stat-unrated">—</b></span>
+        <span>Rated: <b id="stat-rated">—</b></span>
+        <span>Rejected: <b id="stat-rejected">—</b></span>
+    </div>
+    <div class="filters">
+        <input type="search" id="search" placeholder="Search prompts...">
+        <select id="sort">
+            <option value="file_modified-desc">Newest first</option>
+            <option value="file_modified-asc">Oldest first</option>
+            <option value="rating-desc">Highest rated</option>
+            <option value="filesize-desc">Largest file</option>
+            <option value="filename-asc">Name A-Z</option>
+        </select>
+        <button class="btn" id="filter-unrated" title="Show unrated only">Unrated only</button>
+        <button class="btn" id="filter-rejected" title="Show rejected">Show rejected</button>
+        <button class="btn" id="btn-compare" title="Compare selected">Compare</button>
+        <button class="btn" id="btn-reindex" title="Re-index vault">Re-index</button>
+    </div>
+</div>
+
+<div class="main">
+    <div class="sidebar" id="sidebar">
+        <img class="detail-img" id="detail-img" src="">
+        <div class="detail-actions">
+            <button class="btn" onclick="rateCurrent(1)">★</button>
+            <button class="btn" onclick="rateCurrent(2)">★★</button>
+            <button class="btn" onclick="rateCurrent(3)">★★★</button>
+            <button class="btn" onclick="rateCurrent(4)">★★★★</button>
+            <button class="btn" onclick="rateCurrent(5)">★★★★★</button>
+            <button class="btn" onclick="rateCurrent(0)">Clear</button>
+            <button class="btn" onclick="toggleFlag()">⚑ Flag</button>
+            <button class="btn" onclick="toggleReject()" style="color: var(--bad)">✕ Reject</button>
+        </div>
+        <div class="detail-meta" id="detail-meta"></div>
+    </div>
+
+    <div class="gallery" id="gallery">
+        <div class="gallery-grid" id="grid"></div>
+        <div class="pagination" id="pagination"></div>
+    </div>
+</div>
+
+<div class="preview-overlay" id="preview">
+    <img id="preview-img" src="">
+</div>
+
+<div class="compare-overlay" id="compare"></div>
+
+<div class="toast" id="toast"></div>
+
+<div class="kbd-hint">
+    <kbd>J</kbd>/<kbd>K</kbd> nav · <kbd>1-5</kbd> rate · <kbd>X</kbd> reject · <kbd>F</kbd> flag · <kbd>Space</kbd> preview · <kbd>C</kbd> compare · <kbd>Esc</kbd> close
+</div>
+
+<script>
+// ─── State ─────────────────────────────────────────────────────────────
+const State = {
+    images: [],
+    cursor: 0,
+    selected: new Set(), // for compare
+    filters: {
+        q: '',
+        sort: 'file_modified',
+        sort_dir: 'desc',
+        unrated_only: false,
+        include_rejected: false,
+    },
+    limit: 50,
+    offset: 0,
+    total: 0,
+    detailId: null,
+};
+
+// ─── API ───────────────────────────────────────────────────────────────
+async function api(path, opts = {}) {
+    const res = await fetch(path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...opts,
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json();
+}
+
+// ─── Load Images ───────────────────────────────────────────────────────
+async function loadImages() {
+    const params = new URLSearchParams();
+    if (State.filters.q) params.set('q', State.filters.q);
+    params.set('sort', State.filters.sort);
+    params.set('sort_dir', State.filters.sort_dir);
+    params.set('unrated_only', State.filters.unrated_only);
+    params.set('include_rejected', State.filters.include_rejected);
+    params.set('limit', State.limit);
+    params.set('offset', State.offset);
+
+    const data = await api(`/api/images?${params}`);
+    State.images = data;
+    renderGrid();
+    loadStats();
+}
+
+// ─── Stats ─────────────────────────────────────────────────────────────
+async function loadStats() {
+    const s = await api('/api/stats');
+    document.getElementById('stat-total').textContent = s.total;
+    document.getElementById('stat-unrated').textContent = s.unrated;
+    document.getElementById('stat-rated').textContent = s.rated;
+    document.getElementById('stat-rejected').textContent = s.rejected;
+}
+
+// ─── Render ────────────────────────────────────────────────────────────
+function renderGrid() {
+    const grid = document.getElementById('grid');
+
+    if (State.images.length === 0) {
+        grid.innerHTML = '<div class="empty"><div class="big">📂</div><div>No images found</div><div>Try adjusting filters or re-indexing</div></div>';
+        document.getElementById('pagination').innerHTML = '';
+        return;
+    }
+
+    grid.innerHTML = State.images.map((img, i) => {
+        const stars = '★'.repeat(img.rating);
+        const cls = [
+            'card',
+            img.rejected ? 'rejected' : '',
+            img.flag ? 'flagged' : '',
+            State.selected.has(img.id) ? 'selected' : '',
+            State.cursor === i ? 'cursor' : '',
+        ].filter(Boolean).join(' ');
+
+        const sizeStr = img.width && img.height ? `${img.width}×${img.height}` : '';
+        const sizeKB = img.filesize ? `${(img.filesize/1024).toFixed(0)}KB` : '';
+        const date = img.file_modified ? new Date(img.file_modified * 1000).toLocaleDateString() : '';
+
+        return `
+            <div class="${cls}" data-idx="${i}" data-id="${img.id}" onclick="onCardClick(${i}, event)">
+                <div class="rating">${stars ? `<span class="star">${stars}</span>` : ''}</div>
+                <img src="/api/thumbnail/${img.id}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22180%22 height=%22180%22><rect fill=%22%23111%22 width=%22180%22 height=%22180%22/><text fill=%22%23666%22 x=%2250%22 y=%2290%22 font-size=%2214%22>error</text></svg>'">
+                <div class="card-overlay">
+                    <span>${date}</span>
+                    <span>${sizeStr || sizeKB}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    // Highlight cursor
+    updateCursorHighlight();
+
+    // Pagination
+    const pag = document.getElementById('pagination');
+    const page = Math.floor(State.offset / State.limit) + 1;
+    const totalPages = Math.ceil(State.total / State.limit) || 1;
+    // Estimate total from what we know
+    pag.innerHTML = `
+        ${State.offset > 0 ? `<button class="btn" onclick="prevPage()">← Prev</button>` : ''}
+        <span>Page ${page}</span>
+        ${State.images.length === State.limit ? `<button class="btn" onclick="nextPage()">Next →</button>` : ''}
+    `;
+}
+
+function updateCursorHighlight() {
+    document.querySelectorAll('.card').forEach((el, i) => {
+        const idx = parseInt(el.dataset.idx);
+        if (idx === State.cursor) {
+            el.style.outline = '3px solid var(--accent)';
+            el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        } else {
+            el.style.outline = '';
+        }
+    });
+}
+
+// ─── Card Interaction ──────────────────────────────────────────────────
+function onCardClick(idx, event) {
+    State.cursor = idx;
+    const img = State.images[idx];
+
+    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+        // Multi-select for compare
+        if (State.selected.has(img.id)) {
+            State.selected.delete(img.id);
+        } else {
+            State.selected.add(img.id);
+        }
+        renderGrid();
+        return;
+    }
+
+    // Single click — open detail
+    openDetail(img);
+    updateCursorHighlight();
+}
+
+// ─── Detail Sidebar ────────────────────────────────────────────────────
+function openDetail(img) {
+    State.detailId = img.id;
+    const sb = document.getElementById('sidebar');
+    sb.classList.add('visible');
+
+    document.getElementById('detail-img').src = `/api/fullimage/${img.id}`;
+
+    const meta = document.getElementById('detail-meta');
+    const date = img.file_modified ? new Date(img.file_modified * 1000).toLocaleString() : '—';
+    meta.innerHTML = `
+        <div class="label">Filename</div>
+        <div class="value">${img.filename}</div>
+        <div class="label">Dimensions</div>
+        <div class="value">${img.width || '?'}×${img.height || '?'}</div>
+        <div class="label">Size</div>
+        <div class="value">${(img.filesize / 1024).toFixed(0)} KB</div>
+        <div class="label">Date</div>
+        <div class="value">${date}</div>
+        ${img.model ? `<div class="label">Model</div><div class="value">${img.model}</div>` : ''}
+        ${img.seed ? `<div class="label">Seed</div><div class="value">${img.seed}</div>` : ''}
+        ${img.rating ? `<div class="label">Rating</div><div class="value">${'★'.repeat(img.rating)}</div>` : ''}
+        ${img.prompt ? `<div class="label">Prompt</div><div class="prompt-box">${escapeHtml(img.prompt)}</div>` : ''}
+        ${img.notes ? `<div class="label">Notes</div><div class="value">${escapeHtml(img.notes)}</div>` : ''}
+    `;
+}
+
+function closeDetail() {
+    document.getElementById('sidebar').classList.remove('visible');
+    State.detailId = null;
+}
+
+// ─── Actions ───────────────────────────────────────────────────────────
+async function rateCurrent(rating) {
+    if (State.detailId === null) return;
+    await api(`/api/image/${State.detailId}/rate`, {
+        method: 'POST',
+        body: JSON.stringify({ rating }),
+    });
+    // Update local state
+    const img = State.images.find(i => i.id === State.detailId);
+    if (img) img.rating = rating;
+    openDetail(img);
+    renderGrid();
+    advanceCursor();
+    toast(`Rated ${'★'.repeat(rating)}`);
+}
+
+async function toggleReject() {
+    if (State.detailId === null) return;
+    const img = State.images.find(i => i.id === State.detailId);
+    const newRej = !img.rejected;
+    await api(`/api/image/${State.detailId}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ rejected: newRej }),
+    });
+    img.rejected = newRej;
+    openDetail(img);
+    renderGrid();
+    toast(newRej ? 'Rejected' : 'Un-rejected');
+    if (newRej) advanceCursor();
+}
+
+async function toggleFlag() {
+    if (State.detailId === null) return;
+    const img = State.images.find(i => i.id === State.detailId);
+    const newFlag = !img.flag;
+    await api(`/api/image/${State.detailId}/flag`, {
+        method: 'POST',
+        body: JSON.stringify({ flag: newFlag }),
+    });
+    img.flag = newFlag;
+    openDetail(img);
+    renderGrid();
+    toast(newFlag ? 'Flagged ⚑' : 'Unflagged');
+}
+
+function advanceCursor() {
+    if (State.cursor < State.images.length - 1) {
+        State.cursor++;
+        const img = State.images[State.cursor];
+        openDetail(img);
+        updateCursorHighlight();
+    }
+}
+
+function retreatCursor() {
+    if (State.cursor > 0) {
+        State.cursor--;
+        const img = State.images[State.cursor];
+        openDetail(img);
+        updateCursorHighlight();
+    }
+}
+
+// ─── Pagination ────────────────────────────────────────────────────────
+function nextPage() {
+    State.offset += State.limit;
+    State.cursor = 0;
+    loadImages();
+}
+function prevPage() {
+    State.offset = Math.max(0, State.offset - State.limit);
+    State.cursor = 0;
+    loadImages();
+}
+
+// ─── Compare ───────────────────────────────────────────────────────────
+async function openCompare() {
+    if (State.selected.size < 2) {
+        toast('Select 2+ images (Ctrl+Click)');
+        return;
+    }
+    const overlay = document.getElementById('compare');
+    overlay.innerHTML = '';
+    for (const id of State.selected) {
+        const img = document.createElement('img');
+        img.src = `/api/fullimage/${id}`;
+        img.className = 'compare-img';
+        overlay.appendChild(img);
+    }
+    overlay.classList.add('visible');
+}
+
+function closeCompare() {
+    document.getElementById('compare').classList.remove('visible');
+    document.getElementById('compare').innerHTML = '';
+}
+
+// ─── Fullscreen Preview ────────────────────────────────────────────────
+function openPreview() {
+    if (State.cursor === null || !State.images[State.cursor]) return;
+    const img = State.images[State.cursor];
+    document.getElementById('preview-img').src = `/api/fullimage/${img.id}`;
+    document.getElementById('preview').classList.add('visible');
+}
+function closePreview() {
+    document.getElementById('preview').classList.remove('visible');
+}
+
+// ─── Toast ─────────────────────────────────────────────────────────────
+let toastTimer;
+function toast(msg) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.add('visible');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('visible'), 1500);
+}
+
+// ─── Keyboard ──────────────────────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+    // Ignore if typing in input
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') {
+        if (e.key === 'Enter') {
+            State.offset = 0;
+            State.cursor = 0;
+            loadImages();
+        }
+        return;
+    }
+
+    if (e.key === 'Escape') {
+        closePreview();
+        closeCompare();
+        closeDetail();
+        return;
+    }
+
+    // Don't interfere with modals
+    if (document.getElementById('preview').classList.contains('visible')) return;
+    if (document.getElementById('compare').classList.contains('visible')) return;
+
+    switch (e.key) {
+        case 'j': case 'ArrowRight': case 'ArrowDown':
+            advanceCursor(); e.preventDefault(); break;
+        case 'k': case 'ArrowLeft': case 'ArrowUp':
+            retreatCursor(); e.preventDefault(); break;
+        case '1': case '2': case '3': case '4': case '5':
+            rateCurrent(parseInt(e.key)); e.preventDefault(); break;
+        case '0':
+            rateCurrent(0); break;
+        case 'x':
+            toggleReject(); break;
+        case 'f':
+            toggleFlag(); break;
+        case ' ':
+            openPreview(); e.preventDefault(); break;
+        case 'c':
+            openCompare(); break;
+    }
+});
+
+// ─── Filter Wiring ─────────────────────────────────────────────────────
+document.getElementById('search').addEventListener('input', (e) => {
+    State.filters.q = e.target.value;
+    clearTimeout(window._searchTimer);
+    window._searchTimer = setTimeout(() => {
+        State.offset = 0;
+        State.cursor = 0;
+        loadImages();
+    }, 300);
+});
+
+document.getElementById('sort').addEventListener('change', (e) => {
+    const [sort, dir] = e.target.value.split('-');
+    State.filters.sort = sort;
+    State.filters.sort_dir = dir;
+    State.offset = 0;
+    State.cursor = 0;
+    loadImages();
+});
+
+document.getElementById('filter-unrated').addEventListener('click', (e) => {
+    State.filters.unrated_only = !State.filters.unrated_only;
+    e.target.classList.toggle('active', State.filters.unrated_only);
+    State.offset = 0;
+    State.cursor = 0;
+    loadImages();
+});
+
+document.getElementById('filter-rejected').addEventListener('click', (e) => {
+    State.filters.include_rejected = !State.filters.include_rejected;
+    e.target.classList.toggle('active', State.filters.include_rejected);
+    State.offset = 0;
+    State.cursor = 0;
+    loadImages();
+});
+
+document.getElementById('btn-compare').addEventListener('click', openCompare);
+
+document.getElementById('btn-reindex').addEventListener('click', async () => {
+    toast('Re-indexing...');
+    const result = await api('/api/reindex', { method: 'POST', body: JSON.stringify({ force: false }) });
+    toast(`Indexed ${result.indexed} new, skipped ${result.skipped}`);
+    loadImages();
+});
+
+document.getElementById('preview').addEventListener('click', closePreview);
+document.getElementById('compare').addEventListener('click', closeCompare);
+
+// ─── Utils ─────────────────────────────────────────────────────────────
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// ─── Init ──────────────────────────────────────────────────────────────
+loadImages();
+</script>
+</body>
+</html>
