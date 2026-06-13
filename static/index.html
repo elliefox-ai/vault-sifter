@@ -308,12 +308,16 @@
             <option value="file_modified-desc">Newest first</option>
             <option value="file_modified-asc">Oldest first</option>
             <option value="rating-desc">Highest rated</option>
+            <option value="quality_score-desc">Best quality</option>
+            <option value="sharpness-desc">Sharpest</option>
+            <option value="saturation-desc">Most colorful</option>
             <option value="filesize-desc">Largest file</option>
             <option value="filename-asc">Name A-Z</option>
         </select>
         <button class="btn" id="filter-unrated" title="Show unrated only">Unrated only</button>
         <button class="btn" id="filter-rejected" title="Show rejected">Show rejected</button>
         <button class="btn" id="btn-compare" title="Compare selected">Compare</button>
+        <button class="btn" id="btn-analyze" title="Run quality analysis">Analyze</button>
         <button class="btn" id="btn-reindex" title="Re-index vault">Re-index</button>
     </div>
 </div>
@@ -430,10 +434,13 @@ function renderGrid() {
         const sizeStr = img.width && img.height ? `${img.width}×${img.height}` : '';
         const sizeKB = img.filesize ? `${(img.filesize/1024).toFixed(0)}KB` : '';
         const date = img.file_modified ? new Date(img.file_modified * 1000).toLocaleDateString() : '';
+        const qs = img.quality_score != null ? img.quality_score.toFixed(0) : '—';
+        const qsColor = qs >= 75 ? 'var(--good)' : qs >= 50 ? 'var(--warn)' : 'var(--bad)';
 
         return `
             <div class="${cls}" data-idx="${i}" data-id="${img.id}" onclick="onCardClick(${i}, event)">
                 <div class="rating">${stars ? `<span class="star">${stars}</span>` : ''}</div>
+                ${img.quality_score != null ? `<div style="position:absolute;top:4px;right:${img.flag ? '20px' : '4px'};background:rgba(0,0,0,0.7);color:${qsColor};font-size:10px;padding:1px 4px;border-radius:3px;font-weight:600;">${qs}</div>` : ''}
                 <img src="/api/thumbnail/${img.id}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22180%22 height=%22180%22><rect fill=%22%23111%22 width=%22180%22 height=%22180%22/><text fill=%22%23666%22 x=%2250%22 y=%2290%22 font-size=%2214%22>error</text></svg>'">
                 <div class="card-overlay">
                     <span>${date}</span>
@@ -512,6 +519,13 @@ function openDetail(img) {
         <div class="value">${date}</div>
         ${img.model ? `<div class="label">Model</div><div class="value">${img.model}</div>` : ''}
         ${img.seed ? `<div class="label">Seed</div><div class="value">${img.seed}</div>` : ''}
+        ${img.quality_score != null ? `
+            <div class="label">Quality Score</div>
+            <div class="value" style="font-size:18px;font-weight:700;color:${img.quality_score >= 75 ? 'var(--good)' : img.quality_score >= 50 ? 'var(--warn)' : 'var(--bad)'}">${img.quality_score.toFixed(1)}<span style="font-size:12px;color:var(--text-dim);font-weight:400"> /100</span></div>
+            <div class="value" style="font-size:11px;color:var(--text-dim)">
+                Sharp: ${img.sharpness?.toFixed(0) || '—'} · Bright: ${img.brightness?.toFixed(2) || '—'} · Contrast: ${img.contrast?.toFixed(2) || '—'} · Sat: ${img.saturation?.toFixed(2) || '—'} · Entropy: ${img.entropy?.toFixed(2) || '—'}
+            </div>
+        ` : ''}
         ${img.rating ? `<div class="label">Rating</div><div class="value">${'★'.repeat(img.rating)}</div>` : ''}
         ${img.prompt ? `<div class="label">Prompt</div><div class="prompt-box">${escapeHtml(img.prompt)}</div>` : ''}
         ${img.notes ? `<div class="label">Notes</div><div class="value">${escapeHtml(img.notes)}</div>` : ''}
@@ -721,6 +735,13 @@ document.getElementById('filter-rejected').addEventListener('click', (e) => {
 });
 
 document.getElementById('btn-compare').addEventListener('click', openCompare);
+
+document.getElementById('btn-analyze').addEventListener('click', async () => {
+    toast('Analyzing images...');
+    const result = await api('/api/analyze', { method: 'POST', body: JSON.stringify({}) });
+    toast(`Analyzed ${result.analyzed} images (${result.errors} errors)`);
+    loadImages();
+});
 
 document.getElementById('btn-reindex').addEventListener('click', async () => {
     toast('Re-indexing...');

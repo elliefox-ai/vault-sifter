@@ -12,6 +12,7 @@ from pathlib import Path
 from io import BytesIO
 
 from flask import Flask, jsonify, request, send_file, send_from_directory, abort
+from analyzer import analyze_image, quality_score
 
 app = Flask(__name__, static_folder="static")
 
@@ -47,6 +48,18 @@ def init_db():
             tags TEXT DEFAULT '',
             notes TEXT DEFAULT '',
             indexed_at REAL,
+            -- Auto-analysis metrics
+            sharpness REAL,
+            brightness REAL,
+            contrast REAL,
+            saturation REAL,
+            entropy REAL,
+            quality_score REAL,
+            is_grayscale INTEGER DEFAULT 0,
+            mean_color TEXT,
+            unique_colors INTEGER,
+            file_corrupt INTEGER DEFAULT 0,
+            analyzed_at REAL,
             UNIQUE(filepath)
         )
     """)
@@ -178,6 +191,9 @@ def index_directory(vault_path, force=False):
         if filepath.suffix.lower() == ".png":
             meta = extract_png_metadata(filepath)
 
+        # Skip analysis during initial index — run on-demand via /api/analyze
+        # This keeps indexing fast (metadata only) and analysis separate
+
         try:
             conn.execute("""
                 INSERT OR IGNORE INTO images
@@ -272,7 +288,7 @@ def list_images():
     # Sort
     sort = request.args.get("sort", "file_modified")
     sort_dir = request.args.get("sort_dir", "desc")
-    valid_sorts = {"file_modified", "file_created", "filesize", "filename", "rating", "indexed_at"}
+    valid_sorts = {"file_modified", "file_created", "filesize", "filename", "rating", "indexed_at", "quality_score", "sharpness", "saturation", "brightness", "contrast"}
     if sort not in valid_sorts:
         sort = "file_modified"
 
@@ -511,6 +527,53 @@ def reindex():
     force = request.json.get("force", False)
     result = index_directory(VAULT_ROOT, force=force)
     return jsonify(result)
+
+
+@app.route("/api/analyze", methods=["POST"])
+def analyze_all():
+    """Run quality analysis on all unanalyzed images."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, filepath FROM images WHERE analyzed_at IS NULL AND file_corrupt = 0"
+    ).fetchall()
+    
+    analyzed = 0
+    errors = 0
+    for row in rows:
+        try:
+            metrics = analyze_image(row["filepath"])
+            qs = quality_score(metrics)
+            conn.execute("""
+                UPDATE images SET
+                    sharpness = ?, brightness = ?, contrast = ?, saturation = ?,
+                    entropy = ?, quality_score = ?, is_grayscale = ?,
+                    mean_color = ?, unique_colors = ?, file_corrupt = ?,
+                    analyzed_at = ?
+                WHERE id = ?
+            """, (
+                metrics.get("sharpness"),
+                metrics.get("brightness"),
+                metrics.get("contrast"),
+                metrics.get("saturation"),
+                metrics.get("entropy"),
+                qs,
+                1 if metrics.get("is_grayscale") else 0,
+                json.dumps(metrics.get("mean_color")) if metrics.get("mean_color") else None,
+                metrics.get("unique_colors"),
+                1 if metrics.get("file_corrupt") else 0,
+                time.time(),
+                row["id"],
+            ))
+            analyzed += 1
+            if analyzed % 20 == 0:
+                conn.commit()
+        except Exception as e:
+            print(f"Error analyzing {row['filepath']}: {e}")
+            errors += 1
+    
+    conn.commit()
+    conn.close()
+    return jsonify({"analyzed": analyzed, "errors": errors})
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
