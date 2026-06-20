@@ -201,13 +201,82 @@
             padding: 40px;
             overflow: auto;
         }
-        .compare-overlay.visible { display: flex; gap: 16px; align-items: flex-start; justify-content: center; }
-        .compare-img {
-            max-height: 90vh;
+        .compare-overlay.visible { display: flex; gap: 16px; align-items: flex-start; justify-content: center; flex-wrap: wrap; }
+
+        /* ─── Compare Cards ─── */
+        .compare-card {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
             max-width: 48%;
+        }
+        .compare-img {
+            max-height: 70vh;
+            max-width: 100%;
             object-fit: contain;
             border-radius: 4px;
         }
+        .compare-meta {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 12px;
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+        .compare-filename {
+            font-size: 11px;
+            color: var(--text);
+            margin-bottom: 8px;
+            word-break: break-all;
+        }
+        .compare-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 2px 0;
+        }
+        .compare-row b { color: var(--text); }
+        .compare-prompt {
+            margin-top: 8px;
+            font-size: 11px;
+            color: var(--text-dim);
+            font-style: italic;
+            line-height: 1.4;
+            max-height: 60px;
+            overflow: auto;
+        }
+        .compare-actions {
+            display: flex;
+            gap: 4px;
+            margin-top: 8px;
+            flex-wrap: wrap;
+        }
+        .compare-actions .btn { font-size: 11px; padding: 2px 6px; }
+        .compare-close {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 101;
+        }
+
+        /* ─── Bulk Action Bar ─── */
+        .bulk-bar {
+            display: none;
+            position: fixed;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--surface);
+            border: 1px solid var(--accent);
+            border-radius: 6px;
+            padding: 8px 16px;
+            gap: 8px;
+            align-items: center;
+            z-index: 50;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        .bulk-bar.visible { display: flex; }
+        .bulk-bar span { font-size: 12px; color: var(--text-dim); margin-right: 4px; }
 
         /* ─── Fullscreen Preview ─── */
         .preview-overlay {
@@ -316,10 +385,26 @@
         </select>
         <button class="btn" id="filter-unrated" title="Show unrated only">Unrated only</button>
         <button class="btn" id="filter-rejected" title="Show rejected">Show rejected</button>
+        <select id="quality-filter" title="Filter by quality score" style="width: 110px;">
+            <option value="">Any quality</option>
+            <option value="75">≥ 75 (good)</option>
+            <option value="50">≥ 50 (ok)</option>
+            <option value="25">≥ 25 (low)</option>
+            <option value="0-49">0–49 (poor)</option>
+        </select>
         <button class="btn" id="btn-compare" title="Compare selected">Compare</button>
         <button class="btn" id="btn-analyze" title="Run quality analysis">Analyze</button>
         <button class="btn" id="btn-reindex" title="Re-index vault">Re-index</button>
     </div>
+</div>
+
+<div class="bulk-bar" id="bulk-bar">
+    <span id="bulk-count">0 selected</span>
+    <button class="btn" onclick="bulkRate(3)">Rate ★3</button>
+    <button class="btn" onclick="bulkRate(4)">★4</button>
+    <button class="btn" onclick="bulkRate(5)">★5</button>
+    <button class="btn" onclick="bulkReject()">Reject All</button>
+    <button class="btn" onclick="clearSelection()">Clear</button>
 </div>
 
 <div class="main">
@@ -336,6 +421,14 @@
             <button class="btn" onclick="toggleReject()" style="color: var(--bad)">✕ Reject</button>
         </div>
         <div class="detail-meta" id="detail-meta"></div>
+        <div style="padding: 0 16px 12px; border-top: 1px solid var(--border); margin-top: 8px;">
+            <div style="color: var(--text-dim); font-size: 12px; margin-top: 8px; margin-bottom: 4px;">Tags</div>
+            <div id="detail-tags-display" style="font-size: 11px; color: var(--accent); margin-bottom: 4px;"></div>
+            <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
+                <input type="text" id="tag-input" placeholder="Add tags..." style="background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; font-size: 12px; flex: 1; min-width: 120px;">
+                <button class="btn" onclick="saveTags()" style="font-size: 11px;">Save</button>
+            </div>
+        </div>
     </div>
 
     <div class="gallery" id="gallery">
@@ -368,6 +461,8 @@ const State = {
         sort_dir: 'desc',
         unrated_only: false,
         include_rejected: false,
+        min_quality: 0,
+        max_quality: 999,
     },
     limit: 50,
     offset: 0,
@@ -393,11 +488,14 @@ async function loadImages() {
     params.set('sort_dir', State.filters.sort_dir);
     params.set('unrated_only', State.filters.unrated_only);
     params.set('include_rejected', State.filters.include_rejected);
+    if (State.filters.min_quality > 0) params.set('min_quality', State.filters.min_quality);
+    if (State.filters.max_quality < 999) params.set('max_quality', State.filters.max_quality);
     params.set('limit', State.limit);
     params.set('offset', State.offset);
 
     const data = await api(`/api/images?${params}`);
-    State.images = data;
+    State.images = data.images;
+    State.total = data.total;
     renderGrid();
     loadStats();
 }
@@ -460,8 +558,8 @@ function renderGrid() {
     // Estimate total from what we know
     pag.innerHTML = `
         ${State.offset > 0 ? `<button class="btn" onclick="prevPage()">← Prev</button>` : ''}
-        <span>Page ${page}</span>
-        ${State.images.length === State.limit ? `<button class="btn" onclick="nextPage()">Next →</button>` : ''}
+        <span>Page ${page} of ${totalPages}</span>
+        ${page < totalPages ? `<button class="btn" onclick="nextPage()">Next →</button>` : ''}
     `;
 }
 
@@ -490,6 +588,7 @@ function onCardClick(idx, event) {
             State.selected.add(img.id);
         }
         renderGrid();
+        updateBulkBar();
         return;
     }
 
@@ -510,15 +609,15 @@ function openDetail(img) {
     const date = img.file_modified ? new Date(img.file_modified * 1000).toLocaleString() : '—';
     meta.innerHTML = `
         <div class="label">Filename</div>
-        <div class="value">${img.filename}</div>
+        <div class="value">${escapeHtml(img.filename)}</div>
         <div class="label">Dimensions</div>
         <div class="value">${img.width || '?'}×${img.height || '?'}</div>
         <div class="label">Size</div>
         <div class="value">${(img.filesize / 1024).toFixed(0)} KB</div>
         <div class="label">Date</div>
-        <div class="value">${date}</div>
-        ${img.model ? `<div class="label">Model</div><div class="value">${img.model}</div>` : ''}
-        ${img.seed ? `<div class="label">Seed</div><div class="value">${img.seed}</div>` : ''}
+        <div class="value">${escapeHtml(date)}</div>
+        ${img.model ? `<div class="label">Model</div><div class="value">${escapeHtml(img.model)}</div>` : ''}
+        ${img.seed ? `<div class="label">Seed</div><div class="value">${escapeHtml(String(img.seed))}</div>` : ''}
         ${img.quality_score != null ? `
             <div class="label">Quality Score</div>
             <div class="value" style="font-size:18px;font-weight:700;color:${img.quality_score >= 75 ? 'var(--good)' : img.quality_score >= 50 ? 'var(--warn)' : 'var(--bad)'}">${img.quality_score.toFixed(1)}<span style="font-size:12px;color:var(--text-dim);font-weight:400"> /100</span></div>
@@ -530,6 +629,11 @@ function openDetail(img) {
         ${img.prompt ? `<div class="label">Prompt</div><div class="prompt-box">${escapeHtml(img.prompt)}</div>` : ''}
         ${img.notes ? `<div class="label">Notes</div><div class="value">${escapeHtml(img.notes)}</div>` : ''}
     `;
+
+    // Update tags display
+    const tagsDisplay = document.getElementById('detail-tags-display');
+    tagsDisplay.textContent = img.tags || '';
+    document.getElementById('tag-input').value = img.tags || '';
 }
 
 function closeDetail() {
@@ -564,8 +668,20 @@ async function toggleReject() {
     img.rejected = newRej;
     openDetail(img);
     renderGrid();
-    toast(newRej ? 'Rejected' : 'Un-rejected');
-    if (newRej) advanceCursor();
+    if (newRej) {
+        toast('Rejected', 'Undo', async () => {
+            await api(`/api/image/${State.detailId}/reject`, {
+                method: 'POST',
+                body: JSON.stringify({ rejected: false }),
+            });
+            img.rejected = false;
+            openDetail(img);
+            renderGrid();
+        });
+        advanceCursor();
+    } else {
+        toast('Un-rejected');
+    }
 }
 
 async function toggleFlag() {
@@ -582,21 +698,57 @@ async function toggleFlag() {
     toast(newFlag ? 'Flagged ⚑' : 'Unflagged');
 }
 
-function advanceCursor() {
+async function saveTags() {
+    if (State.detailId === null) return;
+    const tags = document.getElementById('tag-input').value.trim();
+    await api(`/api/image/${State.detailId}/tags`, {
+        method: 'POST',
+        body: JSON.stringify({ tags }),
+    });
+    const img = State.images.find(i => i.id === State.detailId);
+    if (img) img.tags = tags;
+    document.getElementById('detail-tags-display').textContent = tags;
+    toast(tags ? `Tags: ${tags}` : 'Tags cleared');
+}
+
+async function advanceCursor() {
     if (State.cursor < State.images.length - 1) {
         State.cursor++;
         const img = State.images[State.cursor];
         openDetail(img);
         updateCursorHighlight();
+    } else {
+        // At end of page — auto-load next page if available
+        const totalPages = Math.ceil(State.total / State.limit) || 1;
+        const currentPage = Math.floor(State.offset / State.limit) + 1;
+        if (currentPage < totalPages) {
+            State.offset += State.limit;
+            State.cursor = 0;
+            await loadImages();
+            if (State.images.length > 0) {
+                openDetail(State.images[0]);
+                updateCursorHighlight();
+            }
+        }
     }
 }
 
-function retreatCursor() {
+async function retreatCursor() {
     if (State.cursor > 0) {
         State.cursor--;
         const img = State.images[State.cursor];
         openDetail(img);
         updateCursorHighlight();
+    } else if (State.offset > 0) {
+        // At start of page — load previous page, go to last image
+        State.offset = Math.max(0, State.offset - State.limit);
+        State.cursor = State.limit - 1;
+        await loadImages();
+        if (State.images.length > 0) {
+            State.cursor = State.images.length - 1;
+            openDetail(State.images[State.cursor]);
+            updateCursorHighlight();
+        }
     }
 }
 
@@ -620,18 +772,146 @@ async function openCompare() {
     }
     const overlay = document.getElementById('compare');
     overlay.innerHTML = '';
+
+    // Fetch metadata for all selected
+    const imgs = [];
     for (const id of State.selected) {
-        const img = document.createElement('img');
-        img.src = `/api/fullimage/${id}`;
-        img.className = 'compare-img';
-        overlay.appendChild(img);
+        const data = await api(`/api/image/${id}`);
+        imgs.push(data);
     }
+
+    // Build compare cards
+    for (const img of imgs) {
+        const card = document.createElement('div');
+        card.className = 'compare-card';
+
+        const imageEl = document.createElement('img');
+        imageEl.src = `/api/fullimage/${img.id}`;
+        imageEl.className = 'compare-img';
+        imageEl.dataset.id = img.id;
+        card.appendChild(imageEl);
+
+        // Metadata panel
+        const meta = document.createElement('div');
+        meta.className = 'compare-meta';
+        const qs = img.quality_score != null ? img.quality_score.toFixed(1) : '—';
+        const sharp = img.sharpness != null ? Math.round(img.sharpness) : '—';
+        const rating = img.rating > 0 ? '★'.repeat(img.rating) : 'unrated';
+        const prompt = img.prompt ? (img.prompt.length > 100 ? img.prompt.slice(0, 100) + '…' : img.prompt) : '—';
+        const dim = img.width && img.height ? `${img.width}×${img.height}` : '—';
+        const size = img.filesize ? `${(img.filesize / 1024).toFixed(0)} KB` : '—';
+        const flagged = img.flag ? ' ⚑' : ''
+        const rejected = img.rejected ? ' ✗' : '';
+
+        meta.innerHTML = `
+            <div class="compare-filename">${escapeHtml(img.filename)}${flagged}${rejected}</div>
+            <div class="compare-row"><span>Quality</span><b>${qs}</b></div>
+            <div class="compare-row"><span>Sharpness</span><b>${sharp}</b></div>
+            <div class="compare-row"><span>Rating</span><b>${rating}</b></div>
+            <div class="compare-row"><span>Dims</span><b>${dim}</b></div>
+            <div class="compare-row"><span>Size</span><b>${size}</b></div>
+            <div class="compare-row"><span>Model</span><b>${escapeHtml(img.model || '—')}</b></div>
+            <div class="compare-prompt">${escapeHtml(prompt)}</div>
+            <div class="compare-actions">
+                <button class="btn" onclick="compareRate(${img.id}, 1)">★1</button>
+                <button class="btn" onclick="compareRate(${img.id}, 2)">★2</button>
+                <button class="btn" onclick="compareRate(${img.id}, 3)">★3</button>
+                <button class="btn" onclick="compareRate(${img.id}, 4)">★4</button>
+                <button class="btn" onclick="compareRate(${img.id}, 5)">★5</button>
+                <button class="btn" onclick="compareReject(${img.id})">✗ Reject</button>
+            </div>
+        `;
+        card.appendChild(meta);
+        overlay.appendChild(card);
+    }
+
+    // Close button
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'btn compare-close';
+    closeBtn.textContent = '✕ Close';
+    closeBtn.onclick = closeCompare;
+    overlay.appendChild(closeBtn);
+
     overlay.classList.add('visible');
+}
+
+async function compareRate(id, rating) {
+    await api(`/api/image/${id}/rate`, {
+        method: 'POST',
+        body: JSON.stringify({ rating }),
+    });
+    const img = State.images.find(i => i.id === id);
+    if (img) img.rating = rating;
+    toast(`Rated ${'★'.repeat(rating)}`);
+}
+
+async function compareReject(id) {
+    await api(`/api/image/${id}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ rejected: true }),
+    });
+    const img = State.images.find(i => i.id === id);
+    if (img) img.rejected = true;
+    toast('Rejected');
 }
 
 function closeCompare() {
     document.getElementById('compare').classList.remove('visible');
     document.getElementById('compare').innerHTML = '';
+}
+
+// ─── Bulk Actions ─────────────────────────────────────────────────────
+function updateBulkBar() {
+    const bar = document.getElementById('bulk-bar');
+    const count = State.selected.size;
+    bar.classList.toggle('visible', count > 0);
+    document.getElementById('bulk-count').textContent = `${count} selected`;
+}
+
+function clearSelection() {
+    State.selected.clear();
+    renderGrid();
+    updateBulkBar();
+}
+
+async function bulkRate(rating) {
+    const ids = [...State.selected];
+    for (const id of ids) {
+        await api(`/api/image/${id}/rate`, {
+            method: 'POST',
+            body: JSON.stringify({ rating }),
+        });
+        const img = State.images.find(i => i.id === id);
+        if (img) img.rating = rating;
+    }
+    toast(`Rated ${ids.length} images ${'★'.repeat(rating)}`);
+    renderGrid();
+    clearSelection();
+}
+
+async function bulkReject() {
+    const ids = [...State.selected];
+    for (const id of ids) {
+        await api(`/api/image/${id}/reject`, {
+            method: 'POST',
+            body: JSON.stringify({ rejected: true }),
+        });
+        const img = State.images.find(i => i.id === id);
+        if (img) img.rejected = true;
+    }
+    toast(`Rejected ${ids.length} images`, 'Undo', async () => {
+        for (const id of ids) {
+            await api(`/api/image/${id}/reject`, {
+                method: 'POST',
+                body: JSON.stringify({ rejected: false }),
+            });
+            const img = State.images.find(i => i.id === id);
+            if (img) img.rejected = false;
+        }
+        renderGrid();
+    });
+    renderGrid();
+    clearSelection();
 }
 
 // ─── Fullscreen Preview ────────────────────────────────────────────────
@@ -647,12 +927,20 @@ function closePreview() {
 
 // ─── Toast ─────────────────────────────────────────────────────────────
 let toastTimer;
-function toast(msg) {
+function toast(msg, actionLabel, actionFn) {
     const el = document.getElementById('toast');
+    el.innerHTML = '';
     el.textContent = msg;
+    if (actionLabel && actionFn) {
+        const btn = document.createElement('button');
+        btn.textContent = actionLabel;
+        btn.style.cssText = 'background:none;border:1px solid var(--border);color:var(--accent);padding:2px 8px;border-radius:3px;cursor:pointer;font-size:12px;margin-left:8px;';
+        btn.onclick = () => { actionFn(); el.classList.remove('visible'); };
+        el.appendChild(btn);
+    }
     el.classList.add('visible');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.remove('visible'), 1500);
+    toastTimer = setTimeout(() => el.classList.remove('visible'), 3500);
 }
 
 // ─── Keyboard ──────────────────────────────────────────────────────────
@@ -736,11 +1024,44 @@ document.getElementById('filter-rejected').addEventListener('click', (e) => {
 
 document.getElementById('btn-compare').addEventListener('click', openCompare);
 
-document.getElementById('btn-analyze').addEventListener('click', async () => {
-    toast('Analyzing images...');
-    const result = await api('/api/analyze', { method: 'POST', body: JSON.stringify({}) });
-    toast(`Analyzed ${result.analyzed} images (${result.errors} errors)`);
+document.getElementById('quality-filter').addEventListener('change', (e) => {
+    const val = e.target.value;
+    if (val.includes('-')) {
+        const [lo, hi] = val.split('-').map(Number);
+        State.filters.min_quality = lo;
+        State.filters.max_quality = hi;
+    } else if (val) {
+        State.filters.min_quality = Number(val);
+        State.filters.max_quality = 999;
+    } else {
+        State.filters.min_quality = 0;
+        State.filters.max_quality = 999;
+    }
+    State.offset = 0;
+    State.cursor = 0;
     loadImages();
+});
+
+document.getElementById('btn-analyze').addEventListener('click', async () => {
+    const result = await api('/api/analyze', { method: 'POST', body: JSON.stringify({}) });
+    if (result.status === 'already_running') {
+        toast('Analysis already running...');
+        return;
+    }
+    // Poll progress
+    const poll = async () => {
+        const p = await api('/api/analyze/progress');
+        if (p.running) {
+            const pct = p.total > 0 ? Math.round(p.done / p.total * 100) : 0;
+            toast(`Analyzing... ${p.done}/${p.total} (${pct}%)`);
+            setTimeout(poll, 2000);
+        } else {
+            toast(`Analyzed ${p.done} images (${p.errors} errors)`);
+            loadImages();
+        }
+    };
+    toast(`Analyzing ${result.total} images...`);
+    setTimeout(poll, 2000);
 });
 
 document.getElementById('btn-reindex').addEventListener('click', async () => {

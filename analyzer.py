@@ -4,6 +4,7 @@ No neural models — just signal processing. ~15-30ms per image.
 """
 
 import io
+import math
 import numpy as np
 from scipy.ndimage import convolve
 from PIL import Image
@@ -145,8 +146,6 @@ def quality_score(metrics):
     sat = metrics.get("saturation", 0) or 0
     entropy = metrics.get("entropy", 0) or 0
 
-    # Normalize sharpness (log scale — values range ~100-50000)
-    import math
     sharp_norm = min(1.0, math.log10(max(1, sharp)) / 4.5)
 
     # Weighted combination
