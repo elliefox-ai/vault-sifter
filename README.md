@@ -12,7 +12,20 @@ If you run ComfyUI, Stable Diffusion, or any local image generation pipeline, yo
 - **Smart filtering** — By date, model, prompt text, rating, unrated-only
 - **Bulk actions** — Delete rejects, move keepers, export curated set
 - **Session memory** — Remembers your position, so you can sift in chunks
+- **Near-dupe families** — Pull a folder into a review pool (moves, preserves source structure), cluster by perceptual hash (pHash + dHash), review families side-by-side, mark keep/dump per member, resolve: keepers → curated folder, dumps → trash
+- **Confidence slider** — Maps directly to the similarity threshold; nudge it down until the right images get sucked into families. Loose by default — you make the final call
 - **100% local** — No cloud, no upload, no API keys
+
+## Near-Dupe Workflow
+
+1. **Pull** — paste a source folder in the Dupes panel; images are **moved** (not copied) into the pool, preserving their folder structure (`pool/<source>/<subdirs>/...`). Byte-identical twins are recorded as exact dupes and left in place. A `manifest.json` tracks everything.
+2. **Cluster** — click *Find dupes*; images are hashed (checkpointed) and compared pairwise, then grouped into families of 2+.
+3. **Review** — each family shows thumbnail strips; click members to toggle keep ✓ / dump 🗑, or open the family in the side-by-side compare view.
+4. **Resolve** — keepers move to a curated folder (default: `<pool>_curated`, structure preserved), dumps go to `.dupe-trash/` inside the pool (recoverable; hard delete available). DB rows and hash caches update automatically.
+
+Tune the confidence slider to re-cluster live. The families endpoint recomputes edges automatically after pulls and resolves.
+
+> Escalation path: if re-renders with changed pose/composition slip through hashing, the spec documents CLIP/DINOv2 embeddings as the next tier — not built yet, by design (no gold-plating).
 
 ## Quick Start
 

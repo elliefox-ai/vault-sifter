@@ -359,6 +359,103 @@
             font-size: 10px;
             color: var(--text);
         }
+
+        /* ─── Dupe Panel ─── */
+        .dupe-panel {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: var(--bg);
+            z-index: 60;
+            flex-direction: column;
+            overflow-y: auto;
+            padding: 24px;
+            gap: 16px;
+        }
+        .dupe-panel.visible { display: flex; }
+        .dupe-header { display: flex; align-items: center; gap: 12px; }
+        .dupe-header h2 { font-size: 16px; }
+        .dupe-status { font-size: 12px; color: var(--text-dim); }
+        .dupe-status b { color: var(--text); }
+        .dupe-section {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .dupe-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .dupe-row label { font-size: 12px; color: var(--text-dim); }
+        .dupe-row input[type="text"] {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 13px;
+            flex: 1;
+            min-width: 200px;
+            outline: none;
+        }
+        .dupe-row input[type="text"]:focus { border-color: var(--accent); }
+        .dupe-row input[type="range"] { flex: 1; min-width: 200px; accent-color: var(--accent); }
+        .dupe-conf-label { font-size: 14px; font-weight: 700; color: var(--accent); min-width: 34px; text-align: center; }
+        .dupe-threshold { font-size: 11px; color: var(--text-dim); }
+        .dupe-summary { font-size: 12px; color: var(--text-dim); }
+        .dupe-summary b { color: var(--text); }
+        .dupe-progress { font-size: 12px; color: var(--accent); }
+        .family-list { display: flex; flex-direction: column; gap: 12px; }
+        .family-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px;
+        }
+        .family-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+        .family-head .fname { font-size: 13px; font-weight: 600; }
+        .family-head .fmeta { font-size: 11px; color: var(--text-dim); }
+        .family-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
+        .fam-member {
+            position: relative;
+            flex-shrink: 0;
+            width: 120px;
+            border-radius: 6px;
+            overflow: hidden;
+            cursor: pointer;
+            border: 3px solid var(--good);
+            transition: border-color 0.1s;
+        }
+        .fam-member.dump { border-color: var(--bad); opacity: 0.45; }
+        .fam-member img { width: 120px; height: 120px; object-fit: cover; display: block; background: #111; }
+        .fam-member .fm-badge {
+            position: absolute; top: 4px; right: 4px;
+            font-size: 12px;
+            background: rgba(0,0,0,0.7);
+            border-radius: 4px;
+            padding: 1px 5px;
+            color: var(--good);
+        }
+        .fam-member.dump .fm-badge { color: var(--bad); }
+        .fam-member .fm-name {
+            position: absolute; bottom: 0; left: 0; right: 0;
+            background: linear-gradient(transparent, rgba(0,0,0,0.85));
+            font-size: 9px;
+            color: var(--text-dim);
+            padding: 14px 4px 3px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .fam-actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+        .fam-actions .btn.primary {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #000;
+            font-weight: 600;
+        }
+        .fam-actions .btn.danger { border-color: var(--bad); color: var(--bad); }
+        .dupe-empty { padding: 40px; text-align: center; color: var(--text-dim); }
+        .dupe-empty .big { font-size: 42px; margin-bottom: 10px; }
     </style>
 </head>
 <body>
@@ -395,6 +492,7 @@
         <button class="btn" id="btn-compare" title="Compare selected">Compare</button>
         <button class="btn" id="btn-analyze" title="Run quality analysis">Analyze</button>
         <button class="btn" id="btn-reindex" title="Re-index vault">Re-index</button>
+        <button class="btn" id="btn-dupes" title="Near-dupe review">Dupes</button>
     </div>
 </div>
 
@@ -442,6 +540,34 @@
 </div>
 
 <div class="compare-overlay" id="compare"></div>
+
+<div class="dupe-panel" id="dupe-panel">
+    <div class="dupe-header">
+        <h2>Near-Dupe Review</h2>
+        <span class="dupe-status" id="dupe-status">—</span>
+        <button class="btn" style="margin-left:auto;" onclick="closeDupes()">✕ Close</button>
+    </div>
+    <div class="dupe-section">
+        <div class="dupe-row">
+            <label>Pull from folder</label>
+            <input type="text" id="dupe-source" placeholder="\\server\\share\\folder or /path/to/folder">
+            <button class="btn" onclick="pullDupe()">Pull into pool</button>
+        </div>
+        <div class="dupe-row">
+            <label>Clustering</label>
+            <button class="btn" id="btn-cluster" onclick="clusterDupe()">Find dupes</button>
+            <span class="dupe-progress" id="dupe-progress"></span>
+        </div>
+        <div class="dupe-row">
+            <label>Confidence</label>
+            <input type="range" id="dupe-confidence" min="0" max="100" value="70" oninput="onConfidenceChange()">
+            <span class="dupe-conf-label" id="dupe-conf-val">70</span>
+            <span class="dupe-threshold" id="dupe-threshold">threshold 12</span>
+            <span class="dupe-summary" id="dupe-summary"></span>
+        </div>
+    </div>
+    <div class="family-list" id="dupe-families"></div>
+</div>
 
 <div class="toast" id="toast"></div>
 
@@ -959,12 +1085,14 @@ document.addEventListener('keydown', (e) => {
         closePreview();
         closeCompare();
         closeDetail();
+        if (DupeState.visible) closeDupes();
         return;
     }
 
     // Don't interfere with modals
     if (document.getElementById('preview').classList.contains('visible')) return;
     if (document.getElementById('compare').classList.contains('visible')) return;
+    if (DupeState.visible) return; // dupe panel: gallery keys suppressed
 
     switch (e.key) {
         case 'j': case 'ArrowRight': case 'ArrowDown':
@@ -1073,6 +1201,202 @@ document.getElementById('btn-reindex').addEventListener('click', async () => {
 
 document.getElementById('preview').addEventListener('click', closePreview);
 document.getElementById('compare').addEventListener('click', closeCompare);
+
+// ─── Dupes ─────────────────────────────────────────────────────────────
+const DupeState = {
+    visible: false,
+    confidence: 70,
+    families: [],
+    stats: null,
+    toggles: new Map(), // rel -> 'keep' | 'dump'
+};
+
+function openDupes() {
+    DupeState.visible = true;
+    document.getElementById('dupe-panel').classList.add('visible');
+    document.getElementById('btn-dupes').classList.add('active');
+    loadDupeStatus();
+    loadDupeFamilies();
+}
+function closeDupes() {
+    DupeState.visible = false;
+    document.getElementById('dupe-panel').classList.remove('visible');
+    document.getElementById('btn-dupes').classList.remove('active');
+}
+
+async function loadDupeStatus() {
+    try {
+        const s = await api('/api/dupes/status');
+        const el = document.getElementById('dupe-status');
+        el.innerHTML = `Pool: <b>${escapeHtml(s.pool)}</b> · images <b>${s.images_on_disk}</b> · hashed <b>${s.hashed}</b> · edges <b>${s.has_edges ? '✓' : '—'}</b>`;
+    } catch (e) {
+        document.getElementById('dupe-status').textContent = 'dupe data unavailable';
+    }
+}
+
+async function pullDupe() {
+    const source = document.getElementById('dupe-source').value.trim();
+    if (!source) { toast('Enter a source folder'); return; }
+    toast('Pulling...');
+    try {
+        const r = await api('/api/dupes/pull', { method: 'POST', body: JSON.stringify({ source }) });
+        toast(`Pulled ${r.moved} (${r.already} already there, ${r.exact_dupes} exact dupes) — ${r.errors.length} errors`);
+        loadDupeStatus();
+        loadDupeFamilies();
+    } catch (e) {
+        toast('Pull failed: ' + e.message);
+    }
+}
+
+let clusterTimer;
+async function clusterDupe() {
+    const prog = document.getElementById('dupe-progress');
+    try {
+        const r = await api('/api/dupes/cluster', { method: 'POST', body: JSON.stringify({}) });
+        if (r.status === 'already_running') { toast('Clustering already running'); return; }
+        prog.textContent = 'Clustering...';
+        const poll = async () => {
+            const p = await api('/api/dupes/cluster/progress');
+            if (p.running) {
+                const pct = p.total > 0 ? Math.round(p.done / p.total * 100) : 0;
+                prog.textContent = `${p.phase} ${p.done}/${p.total} (${pct}%)`;
+                clusterTimer = setTimeout(poll, 1200);
+            } else {
+                prog.textContent = p.phase === 'done' ? `Done — ${p.done} pairs` : 'Error';
+                toast(p.phase === 'done' ? `Clustered ${p.done} pairs` : 'Cluster failed');
+                loadDupeStatus();
+                loadDupeFamilies();
+            }
+        };
+        clusterTimer = setTimeout(poll, 800);
+    } catch (e) {
+        toast('Cluster error: ' + e.message);
+    }
+}
+
+let famTimer;
+function onConfidenceChange() {
+    const val = parseInt(document.getElementById('dupe-confidence').value);
+    DupeState.confidence = val;
+    document.getElementById('dupe-conf-val').textContent = val;
+    document.getElementById('dupe-threshold').textContent = `threshold ${Math.round((100 - val) * 0.4)}`;
+    clearTimeout(famTimer);
+    famTimer = setTimeout(loadDupeFamilies, 250);
+}
+
+async function loadDupeFamilies() {
+    if (!DupeState.visible) return;
+    try {
+        const data = await api(`/api/dupes/families?confidence=${DupeState.confidence}`);
+        DupeState.families = data.families;
+        DupeState.stats = data.stats;
+        const present = new Set(data.families.flatMap(f => f.members.map(m => m.rel)));
+        for (const rel of [...DupeState.toggles.keys()]) {
+            if (!present.has(rel)) DupeState.toggles.delete(rel);
+        }
+        renderDupeFamilies();
+    } catch (e) {
+        document.getElementById('dupe-families').innerHTML = `<div class="dupe-empty">⚠️ ${escapeHtml(e.message)}</div>`;
+    }
+}
+
+function renderDupeFamilies() {
+    const list = document.getElementById('dupe-families');
+    const stats = DupeState.stats;
+    document.getElementById('dupe-summary').innerHTML = stats
+        ? `<b>${stats.families}</b> families · <b>${stats.images_in_families}</b> images · <b>${stats.isolated}</b> isolated`
+        : '';
+    if (!DupeState.families.length) {
+        list.innerHTML = `<div class="dupe-empty"><div class="big">🕵️</div><div>No dupe families at this confidence</div><div style="font-size:11px">Nudge the slider down to loosen the match</div></div>`;
+        return;
+    }
+    list.innerHTML = DupeState.families.map((f, fi) => {
+        const members = f.members.map((m, mi) => {
+            const st = DupeState.toggles.get(m.rel) || 'keep';
+            const badge = st === 'dump' ? '🗑' : '✓';
+            const thumb = m.id ? `/api/thumbnail/${m.id}` : '';
+            return `
+            <div class="fam-member ${st}" data-fi="${fi}" data-mi="${mi}" title="${escapeHtml(m.filename)}">
+                ${thumb ? `<img src="${thumb}" loading="lazy">` : `<div style="width:120px;height:120px;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--text-dim);">no thumb</div>`}
+                <span class="fm-badge">${badge}</span>
+                <div class="fm-name">${escapeHtml(m.filename)}${m.min_dist != null ? ` · ${m.min_dist}` : ''}</div>
+            </div>`;
+        }).join('');
+        const kept = f.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'keep').length;
+        const dumped = f.members.length - kept;
+        return `
+        <div class="family-card">
+            <div class="family-head">
+                <span class="fname">Family ${fi + 1}</span>
+                <span class="fmeta">${f.members.length} members · ${kept} keep / ${dumped} dump</span>
+                <button class="btn" style="margin-left:auto;" onclick="reviewDupeFamily(${fi})">Review side-by-side</button>
+                <button class="btn danger" onclick="dumpAllDupeMembers(${fi})">Dump all</button>
+                <button class="btn primary" onclick="resolveDupeFamily(${fi})">Resolve → curated</button>
+            </div>
+            <div class="family-strip">${members}</div>
+        </div>`;
+    }).join('');
+}
+
+function toggleDupeMember(fi, mi) {
+    const fam = DupeState.families[fi];
+    if (!fam) return;
+    const m = fam.members[mi];
+    if (!m) return;
+    const cur = DupeState.toggles.get(m.rel) || 'keep';
+    DupeState.toggles.set(m.rel, cur === 'keep' ? 'dump' : 'keep');
+    renderDupeFamilies();
+}
+
+function dumpAllDupeMembers(fi) {
+    const fam = DupeState.families[fi];
+    if (!fam) return;
+    fam.members.forEach(m => DupeState.toggles.set(m.rel, 'dump'));
+    renderDupeFamilies();
+}
+
+async function reviewDupeFamily(fi) {
+    const fam = DupeState.families[fi];
+    if (!fam) return;
+    const ids = fam.members.map(m => m.id).filter(Boolean);
+    if (ids.length < 2) { toast('Need 2+ indexed members to compare'); return; }
+    State.selected = new Set(ids);
+    await openCompare();
+}
+
+async function resolveDupeFamily(fi) {
+    const fam = DupeState.families[fi];
+    if (!fam) return;
+    const keep = fam.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'keep').map(m => m.filepath);
+    const reject = fam.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'dump').map(m => m.filepath);
+    if (!keep.length || !reject.length) { toast('Mark at least one member to dump'); return; }
+    if (!confirm(`Keep ${keep.length} → curated, dump ${reject.length}?`)) return;
+    try {
+        const r = await api('/api/dupes/resolve', {
+            method: 'POST',
+            body: JSON.stringify({ keep, reject }),
+        });
+        toast(`Resolved: ${r.kept.length} kept, ${r.trashed.length} trashed${r.errors.length ? `, ${r.errors.length} errors` : ''}`);
+        DupeState.families.splice(fi, 1);
+        for (const m of fam.members) DupeState.toggles.delete(m.rel);
+        loadDupeStatus();
+        loadDupeFamilies();
+        loadImages(); // refresh gallery (DB rows moved/deleted)
+    } catch (e) {
+        toast('Resolve failed: ' + e.message);
+    }
+}
+
+// Dupe family member clicks (delegated)
+document.getElementById('dupe-families').addEventListener('click', (e) => {
+    const el = e.target.closest('.fam-member');
+    if (!el) return;
+    toggleDupeMember(parseInt(el.dataset.fi), parseInt(el.dataset.mi));
+});
+
+document.getElementById('btn-dupes').addEventListener('click', () => {
+    DupeState.visible ? closeDupes() : openDupes();
+});
 
 // ─── Utils ─────────────────────────────────────────────────────────────
 function escapeHtml(text) {

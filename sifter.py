@@ -17,6 +17,8 @@ from io import BytesIO
 
 from flask import Flask, jsonify, request, send_file, send_from_directory, abort
 from analyzer import analyze_image, quality_score
+import dupefind
+import dupe_pull
 
 # Resolve paths for both normal and PyInstaller-bundled execution
 if getattr(sys, 'frozen', False):
@@ -204,6 +206,9 @@ def index_directory(vault_path, force=False):
 
     try:
         for filepath in vault_path.rglob("*"):
+            # Skip internal dot-dirs (dupe trash, tooling) so they never re-enter the vault
+            if any(part.startswith(".") for part in filepath.relative_to(vault_path).parts):
+                continue
             if filepath.suffix.lower() not in IMAGE_EXTS:
                 continue
 
@@ -645,6 +650,209 @@ def analyze_all():
 @app.route("/api/analyze/progress")
 def analyze_progress():
     return jsonify(_analysis_state)
+
+
+# ─── Dupe workflow (near-dupe review) ────────────────────────────────────────
+
+_dupe_lock = threading.Lock()
+_dupe_state = {"running": False, "phase": "", "total": 0, "done": 0, "errors": 0}
+
+
+def _pool_dir():
+    """The pool is the vault root itself; dupe tooling lives in dot-dirs."""
+    return VAULT_ROOT
+
+
+def _relpaths_for(abs_paths, pool):
+    return [os.path.relpath(p, pool) for p in abs_paths]
+
+
+@app.route("/api/dupes/status")
+def dupes_status():
+    pool = _pool_dir()
+    if not pool:
+        return jsonify({"error": "No vault path configured"}), 400
+    manifest = dupe_pull.load_manifest(pool)
+    hashes = dupefind.load_hashes(pool)
+    edges = dupefind.load_edges(pool)
+    files = dupefind.pool_files(pool)
+    return jsonify({
+        "pool": pool,
+        "images_on_disk": len(files),
+        "has_manifest": manifest is not None,
+        "manifest_files": len(manifest["files"]) if manifest else 0,
+        "hashed": len(hashes),
+        "has_edges": edges is not None,
+        "trash_dir": os.path.isdir(os.path.join(pool, dupefind.TRASH_DIR)),
+        "running": _dupe_state["running"],
+    })
+
+
+@app.route("/api/dupes/pull", methods=["POST"])
+def dupes_pull():
+    pool = _pool_dir()
+    if not pool:
+        return jsonify({"error": "No vault path configured"}), 400
+    data = request.json or {}
+    source = data.get("source", "")
+    if not source:
+        return jsonify({"error": "source folder required"}), 400
+    if not os.path.isdir(source):
+        return jsonify({"error": f"folder not found: {source}"}), 400
+
+    res = dupe_pull.pull_into_pool(pool, [source])
+    # Index the newly moved files so they appear in the vault immediately
+    idx = index_directory(pool, force=False)
+    return jsonify({
+        "moved": res["moved"],
+        "already": res["already"],
+        "exact_dupes": len(res["exact_dupes"]),
+        "errors": res["errors"],
+        "indexed": idx["indexed"],
+        "pool": res["pool"],
+    })
+
+
+@app.route("/api/dupes/cluster", methods=["POST"])
+def dupes_cluster():
+    """Hash the pool + compute pairwise edges in the background."""
+    pool = _pool_dir()
+    if not pool:
+        return jsonify({"error": "No vault path configured"}), 400
+    if _dupe_state["running"]:
+        return jsonify({"status": "already_running", **_dupe_state})
+
+    with _dupe_lock:
+        _dupe_state.update(running=True, phase="hashing", total=0, done=0, errors=0)
+
+    def run():
+        try:
+            def prog(done, total):
+                with _dupe_lock:
+                    _dupe_state["done"] = done
+                    _dupe_state["total"] = total
+
+            hashes, new_count = dupefind.compute_hashes(pool, progress=prog)
+            with _dupe_lock:
+                _dupe_state["phase"] = "edges"
+                _dupe_state["done"] = 0
+                _dupe_state["total"] = len(hashes)
+            a, b, d = dupefind.compute_edges(hashes, progress=prog)
+            dupefind.save_edges(pool, a, b, d)
+            with _dupe_lock:
+                _dupe_state.update(running=False, phase="done", done=len(d), total=len(d), errors=0)
+        except Exception as e:
+            print(f"Cluster error: {e}")
+            with _dupe_lock:
+                _dupe_state.update(running=False, phase="error", errors=1)
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify({"status": "started", **_dupe_state})
+
+
+@app.route("/api/dupes/cluster/progress")
+def dupes_cluster_progress():
+    return jsonify(_dupe_state)
+
+
+@app.route("/api/dupes/families")
+def dupes_families():
+    """Families at a confidence level. Edges auto-recomputed when stale/missing."""
+    pool = _pool_dir()
+    if not pool:
+        return jsonify({"error": "No vault path configured"}), 400
+    confidence = request.args.get("confidence", 70, type=int)
+    threshold = dupefind.threshold_for_confidence(confidence)
+
+    hashes = dupefind.load_hashes(pool)
+    if not hashes:
+        return jsonify({"families": [], "threshold": threshold, "confidence": confidence,
+                        "stats": {"families": 0, "images_in_families": 0, "isolated": 0, "max_family_size": 0}})
+
+    # Recompute edges if missing or stale (hashes changed since edges were saved)
+    edges = dupefind.load_edges(pool)
+    hp = os.path.join(pool, dupefind.HASHES_FILE)
+    ep = os.path.join(pool, dupefind.EDGES_FILE)
+    if edges is None or (os.path.exists(hp) and os.path.exists(ep)
+                         and os.path.getmtime(hp) > os.path.getmtime(ep)):
+        a, b, d = dupefind.compute_edges(hashes)
+        dupefind.save_edges(pool, a, b, d)
+    else:
+        a, b, d = edges
+
+    fams = dupefind.families_at_threshold(a, b, d, threshold)
+    rels = sorted(hashes.keys())
+
+    with db() as conn:
+        families = []
+        for fam in fams:
+            dists = dupefind.member_min_dist(fam, a, b, d)
+            members = []
+            for idx in fam:
+                rel = rels[idx]
+                fp = os.path.join(pool, rel)
+                row = conn.execute("SELECT id FROM images WHERE filepath = ?", (fp,)).fetchone()
+                members.append({
+                    "id": row["id"] if row else None,
+                    "rel": rel,
+                    "filename": os.path.basename(rel),
+                    "filepath": fp,
+                    "min_dist": dists.get(idx),
+                })
+            families.append({"size": len(members), "members": members})
+
+    stats = dupefind.family_stats(a, b, d, threshold, len(hashes))
+    return jsonify({
+        "families": families,
+        "threshold": threshold,
+        "confidence": confidence,
+        "stats": stats,
+    })
+
+
+@app.route("/api/dupes/resolve", methods=["POST"])
+def dupes_resolve():
+    """Resolve a family: keepers -> curated dir, rejects -> trash (or delete)."""
+    pool = _pool_dir()
+    if not pool:
+        return jsonify({"error": "No vault path configured"}), 400
+    data = request.json or {}
+    keep = data.get("keep", [])
+    reject = data.get("reject", [])
+    delete = bool(data.get("delete", False))
+    curated = data.get("curated_dir") or os.path.join(os.path.dirname(pool.rstrip(os.sep)),
+                                                      os.path.basename(pool.rstrip(os.sep)) + "_curated")
+    if not keep and not reject:
+        return jsonify({"error": "nothing to resolve"}), 400
+
+    res = dupefind.resolve_family(pool, keep, reject, curated, delete=delete)
+
+    # Update DB: keepers' filepaths changed; rejects are gone from the pool.
+    with db() as conn:
+        for old, new in zip(keep, res["kept"]):
+            conn.execute(
+                "UPDATE images SET filepath = ?, filename = ?, directory = ? WHERE filepath = ?",
+                (new, os.path.basename(new), os.path.dirname(new), old),
+            )
+        for old in reject:
+            row = conn.execute("SELECT id FROM images WHERE filepath = ?", (old,)).fetchone()
+            if row:
+                conn.execute("DELETE FROM images WHERE id = ?", (row["id"],))
+                thumb_hash = hashlib.md5(old.encode()).hexdigest()[:12]
+                for f in THUMB_DIR.glob(f"{thumb_hash}_*"):
+                    f.unlink(missing_ok=True)
+        conn.commit()
+
+    # Drop resolved images from the hash cache so re-clustering is consistent.
+    removed = _relpaths_for(keep + reject, pool)
+    dupefind.prune_hashes(pool, removed)
+
+    return jsonify({
+        "kept": res["kept"],
+        "trashed": res["trashed"],
+        "errors": res["errors"],
+        "curated_dir": curated,
+    })
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
