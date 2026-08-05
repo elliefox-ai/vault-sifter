@@ -1089,7 +1089,7 @@ async function rateInPreview(rating) {
     img.rating = rating;
     updatePreviewHUD(img);
     renderGrid();
-    advanceCursor();
+    await advanceCursor();
     refreshPreview();
 }
 
@@ -1102,7 +1102,7 @@ async function rejectInPreview() {
     updatePreviewHUD(img);
     renderGrid();
     if (newRej) {
-        advanceCursor();
+        await advanceCursor();
         refreshPreview();
     }
 }
@@ -1154,9 +1154,9 @@ document.addEventListener('keydown', (e) => {
     if (inPreview) {
         switch (e.key) {
             case 'j': case 'ArrowRight': case 'ArrowDown':
-                advanceCursor(); refreshPreview(); e.preventDefault(); return;
+                e.preventDefault(); advanceCursor().then(() => refreshPreview()); return;
             case 'k': case 'ArrowLeft': case 'ArrowUp':
-                retreatCursor(); refreshPreview(); e.preventDefault(); return;
+                e.preventDefault(); retreatCursor().then(() => refreshPreview()); return;
             case '1': case '2': case '3': case '4': case '5':
                 rateInPreview(parseInt(e.key)); e.preventDefault(); return;
             case '0':
