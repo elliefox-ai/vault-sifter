@@ -40,14 +40,20 @@ def check_origin():
         if origin and "localhost" not in origin and "127.0.0.1" not in origin:
             return jsonify({"error": "Cross-origin requests not allowed"}), 403
 
-DB_PATH = Path.home() / ".vault-sifter" / "sifter.db"
-THUMB_DIR = Path.home() / ".vault-sifter" / "thumbnails"
+VAULT_HOME = Path.home() / ".vault-sifter"
+THUMB_DIR = VAULT_HOME / "thumbnails"
 VAULT_ROOT = None
+DB_PATH = None  # Set per-vault in main()
 
 
 # ─── Database ────────────────────────────────────────────────────────────────
 
 def init_db():
+    global DB_PATH
+    # Per-vault DB: hash the vault path so each folder gets its own ratings/rejects
+    vault_hash = hashlib.md5(VAULT_ROOT.encode()).hexdigest()[:16]
+    db_name = f"vault_{vault_hash}.db"
+    DB_PATH = VAULT_HOME / db_name
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     THUMB_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
