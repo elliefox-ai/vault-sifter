@@ -292,9 +292,26 @@
         .preview-overlay.visible { display: flex; }
         .preview-overlay img {
             max-width: 95vw;
-            max-height: 95vh;
+            max-height: 90vh;
             object-fit: contain;
         }
+        .preview-hud {
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            padding: 12px 20px;
+            background: linear-gradient(transparent, rgba(0,0,0,0.85));
+            color: #fff;
+            font-size: 14px;
+            font-family: monospace;
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+        }
+        .preview-stars { color: #ffd700; font-size: 16px; letter-spacing: 2px; }
+        .preview-flags { color: #ff6b6b; }
+        .preview-counter { color: #aaa; }
 
         /* ─── Toast ─── */
         .toast {
@@ -537,6 +554,7 @@
 
 <div class="preview-overlay" id="preview">
     <img id="preview-img" src="">
+    <div class="preview-hud" id="preview-hud"></div>
 </div>
 
 <div class="compare-overlay" id="compare"></div>
@@ -572,7 +590,7 @@
 <div class="toast" id="toast"></div>
 
 <div class="kbd-hint">
-    <kbd>J</kbd>/<kbd>K</kbd> nav · <kbd>1-5</kbd> rate · <kbd>X</kbd> reject · <kbd>F</kbd> flag · <kbd>Space</kbd> preview · <kbd>C</kbd> compare · <kbd>Esc</kbd> close
+    <kbd>J</kbd>/<kbd>K</kbd> nav · <kbd>1-5</kbd> rate · <kbd>X</kbd> reject · <kbd>F</kbd> flag · <kbd>Space</kbd> preview (rate + nav works inside!) · <kbd>C</kbd> compare · <kbd>Esc</kbd> close
 </div>
 
 <script>
@@ -1047,6 +1065,48 @@ function openPreview() {
     document.getElementById('preview-img').src = `/api/fullimage/${img.id}`;
     document.getElementById('preview').classList.add('visible');
 }
+function refreshPreview() {
+    if (State.cursor === null || !State.images[State.cursor]) return;
+    const img = State.images[State.cursor];
+    document.getElementById('preview-img').src = `/api/fullimage/${img.id}`;
+    updatePreviewHUD(img);
+}
+
+function updatePreviewHUD(img) {
+    const hud = document.getElementById('preview-hud');
+    const stars = '★'.repeat(img.rating || 0) + '☆'.repeat(5 - (img.rating || 0));
+    const flags = [
+        img.rejected ? '⊘ REJECTED' : '',
+        img.flag ? '⚑ FLAGGED' : '',
+    ].filter(Boolean).join('  ');
+    hud.innerHTML = `<span class="preview-counter">${State.cursor + 1}/${State.total}</span> <span class="preview-stars">${stars}</span> ${flags ? '<span class="preview-flags">' + flags + '</span>' : ''}`;
+}
+
+async function rateInPreview(rating) {
+    if (State.cursor === null || !State.images[State.cursor]) return;
+    const img = State.images[State.cursor];
+    await api(`/api/image/${img.id}/rate`, { method: 'POST', body: JSON.stringify({ rating }) });
+    img.rating = rating;
+    updatePreviewHUD(img);
+    renderGrid();
+    advanceCursor();
+    refreshPreview();
+}
+
+async function rejectInPreview() {
+    if (State.cursor === null || !State.images[State.cursor]) return;
+    const img = State.images[State.cursor];
+    const newRej = !img.rejected;
+    await api(`/api/image/${img.id}/reject`, { method: 'POST', body: JSON.stringify({ rejected: newRej }) });
+    img.rejected = newRej;
+    updatePreviewHUD(img);
+    renderGrid();
+    if (newRej) {
+        advanceCursor();
+        refreshPreview();
+    }
+}
+
 function closePreview() {
     document.getElementById('preview').classList.remove('visible');
 }
@@ -1089,8 +1149,23 @@ document.addEventListener('keydown', (e) => {
         return;
     }
 
-    // Don't interfere with modals
-    if (document.getElementById('preview').classList.contains('visible')) return;
+    // In preview mode: allow navigation, rating, reject, flag — Lightroom-style rate-and-advance
+    const inPreview = document.getElementById('preview').classList.contains('visible');
+    if (inPreview) {
+        switch (e.key) {
+            case 'j': case 'ArrowRight': case 'ArrowDown':
+                advanceCursor(); refreshPreview(); e.preventDefault(); return;
+            case 'k': case 'ArrowLeft': case 'ArrowUp':
+                retreatCursor(); refreshPreview(); e.preventDefault(); return;
+            case '1': case '2': case '3': case '4': case '5':
+                rateInPreview(parseInt(e.key)); e.preventDefault(); return;
+            case '0':
+                rateInPreview(0); e.preventDefault(); return;
+            case 'x':
+                rejectInPreview(); e.preventDefault(); return;
+            default: return;
+        }
+    }
     if (document.getElementById('compare').classList.contains('visible')) return;
     if (DupeState.visible) return; // dupe panel: gallery keys suppressed
 
