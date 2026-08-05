@@ -912,21 +912,20 @@ def main():
     VAULT_ROOT = str(vault_path)
     init_db()
 
+    url = f"http://{args.host}:{args.port}"
     print(f"Vault Sifter")
     print(f"  Vault: {vault_path}")
     print(f"  DB: {DB_PATH}")
-    print(f"  Thumbnails: {THUMB_DIR}")
+    print(f"  Serving on {url}")
     print()
+    print("Indexing in background...")
 
-    print("Indexing images...")
-    result = index_directory(vault_path, force=args.force)
-    print(f"  Indexed: {result['indexed']}")
-    print(f"  Skipped: {result['skipped']}")
-    print(f"  Errors: {result['errors']}")
-    print()
+    def _bg_index():
+        result = index_directory(vault_path, force=args.force)
+        print(f"  Indexing complete: {result['indexed']} indexed, {result['skipped']} skipped, {result['errors']} errors")
 
-    url = f"http://{args.host}:{args.port}"
-    print(f"Serving on {url}")
+    import threading
+    threading.Thread(target=_bg_index, daemon=True).start()
 
     # Auto-open browser in exe mode
     if getattr(sys, 'frozen', False):
