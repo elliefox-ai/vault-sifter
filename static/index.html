@@ -595,6 +595,41 @@
 
 <script>
 // ─── State ─────────────────────────────────────────────────────────────
+// --- State persistence ---
+const SAVED_KEYS = ['cursor', 'offset', 'filters', 'limit'];
+
+function saveState() {
+    const saved = {};
+    SAVED_KEYS.forEach(k => saved[k] = State[k]);
+    try { localStorage.setItem('vault-sifter', JSON.stringify(saved)); } catch(e) {}
+}
+
+function loadSavedState() {
+    try {
+        const raw = localStorage.getItem('vault-sifter');
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        if (saved.cursor != null) State.cursor = saved.cursor;
+        if (saved.offset != null) State.offset = saved.offset;
+        if (saved.limit != null) State.limit = saved.limit;
+        if (saved.filters) Object.assign(State.filters, saved.filters);
+    } catch(e) {}
+}
+
+function restoreFilterUI() {
+    document.getElementById('search').value = State.filters.q || '';
+    document.getElementById('sort').value = `${State.filters.sort}-${State.filters.sort_dir}`;
+    document.getElementById('filter-unrated').classList.toggle('active', State.filters.unrated_only);
+    document.getElementById('filter-rejected').classList.toggle('active', State.filters.include_rejected);
+    // Quality filter
+    const qf = document.getElementById('quality-filter');
+    const minq = State.filters.min_quality;
+    const maxq = State.filters.max_quality;
+    if (minq === 0 && maxq === 999) qf.value = '';
+    else if (maxq === 999) qf.value = String(minq);
+    else qf.value = `${minq}-${maxq}`;
+}
+
 const State = {
     images: [],
     cursor: 0,
@@ -613,6 +648,8 @@ const State = {
     total: 0,
     detailId: null,
 };
+
+loadSavedState();
 
 // ─── API ───────────────────────────────────────────────────────────────
 async function api(path, opts = {}) {
@@ -640,8 +677,11 @@ async function loadImages() {
     const data = await api(`/api/images?${params}`);
     State.images = data.images;
     State.total = data.total;
+    // Clamp cursor to valid range after page load
+    if (State.cursor >= State.images.length) State.cursor = Math.max(0, State.images.length - 1);
     renderGrid();
     loadStats();
+    saveState();
 }
 
 // ─── Stats ─────────────────────────────────────────────────────────────
@@ -861,13 +901,15 @@ async function advanceCursor() {
         const img = State.images[State.cursor];
         openDetail(img);
         updateCursorHighlight();
+        saveState();
     } else {
-        // At end of page — auto-load next page if available
+        // At end of page - auto-load next page if available
         const totalPages = Math.ceil(State.total / State.limit) || 1;
         const currentPage = Math.floor(State.offset / State.limit) + 1;
         if (currentPage < totalPages) {
             State.offset += State.limit;
             State.cursor = 0;
+            saveState();
             await loadImages();
             if (State.images.length > 0) {
                 openDetail(State.images[0]);
@@ -883,6 +925,7 @@ async function retreatCursor() {
         const img = State.images[State.cursor];
         openDetail(img);
         updateCursorHighlight();
+        saveState();
     } else if (State.offset > 0) {
         // At start of page — load previous page, go to last image
         State.offset = Math.max(0, State.offset - State.limit);
@@ -1480,8 +1523,17 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// ─── Init ──────────────────────────────────────────────────────────────
-loadImages();
+// --- Init -----------------------------------------------------------------
+restoreFilterUI();
+
+(async () => {
+    await loadImages();
+    if (State.cursor < State.images.length) {
+        const img = State.images[State.cursor];
+        openDetail(img);
+        updateCursorHighlight();
+    }
+})();
 </script>
 </body>
 </html>
