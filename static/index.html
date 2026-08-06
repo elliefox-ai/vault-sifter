@@ -485,6 +485,59 @@
         .fam-actions .btn.danger { border-color: var(--bad); color: var(--bad); }
         .dupe-empty { padding: 40px; text-align: center; color: var(--text-dim); }
         .dupe-empty .big { font-size: 42px; margin-bottom: 10px; }
+
+        /* ─── Dupe Pagination ─── */
+        .dupe-pagination {
+            display: flex; justify-content: center; align-items: center; gap: 12px;
+            padding: 12px; font-size: 12px; color: var(--text-dim);
+        }
+        .exact-dupes-bar {
+            background: rgba(74, 158, 255, 0.1); border: 1px solid var(--accent);
+            border-radius: 4px; padding: 8px 12px; margin: 8px 0;
+            font-size: 12px; color: var(--accent);
+        }
+
+        /* ─── Flip / Slider Compare ─── */
+        .flip-overlay {
+            display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(0,0,0,0.95); z-index: 10000;
+            flex-direction: column; align-items: center;
+        }
+        .flip-overlay.visible { display: flex; }
+        .flip-toolbar {
+            display: flex; align-items: center; gap: 12px; padding: 12px 20px;
+            width: 100%; box-sizing: border-box; border-bottom: 1px solid var(--border);
+        }
+        .flip-counter { font-size: 13px; color: var(--text-dim); min-width: 0;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 400px; }
+        .flip-stage { flex: 1; display: flex; align-items: center; justify-content: center;
+            width: 100%; overflow: hidden; position: relative; }
+        .flip-img { max-width: 90vw; max-height: 80vh; object-fit: contain; cursor: pointer; }
+        .flip-hint { padding: 8px; font-size: 11px; color: var(--text-dim); }
+
+        .slider-container { position: relative; max-width: 90vw; max-height: 75vh; display: inline-block; cursor: ew-resize; }
+        .slider-img-a, .slider-img-b {
+            display: block; max-width: 90vw; max-height: 75vh; object-fit: contain;
+            user-select: none; -webkit-user-drag: none;
+        }
+        .slider-img-a { position: absolute; top: 0; left: 0; }
+        .slider-handle {
+            position: absolute; top: 0; bottom: 0; width: 4px; background: var(--accent);
+            transform: translateX(-50%); pointer-events: none; z-index: 10;
+        }
+        .slider-handle::after {
+            content: ''; position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 36px; height: 36px; border-radius: 50%;
+            background: var(--accent); opacity: 0.8;
+        }
+        .slider-label-left, .slider-label-right {
+            position: absolute; bottom: 8px; font-size: 11px; color: #fff;
+            background: rgba(0,0,0,0.7); padding: 4px 8px; border-radius: 3px;
+            pointer-events: none;
+        }
+        .slider-label-left { left: 8px; }
+        .slider-label-right { right: 8px; }
     </style>
 </head>
 <body>
@@ -593,6 +646,9 @@
             <span class="dupe-conf-label" id="dupe-conf-val">70</span>
             <span class="dupe-threshold" id="dupe-threshold">threshold 12</span>
             <span class="dupe-summary" id="dupe-summary"></span>
+            <label style="margin-left:16px;display:flex;align-items:center;gap:4px;cursor:pointer">
+                <input type="checkbox" id="hide-rejected" onchange="toggleHideRejected()"> Hide rejected
+            </label>
         </div>
     </div>
     <div class="family-list" id="dupe-families"></div>
@@ -1385,7 +1441,15 @@ const DupeState = {
     families: [],
     stats: null,
     toggles: new Map(), // rel -> 'keep' | 'dump'
+    page: 1,
+    totalPages: 1,
+    totalFamilies: 0,
+    expanded: new Set(), // family indices that are expanded past the member cap
+    exactDupes: [], // streamed during hashing
+    hideRejected: false,
 };
+
+const MEMBER_CAP = 8; // max thumbnails per family before "+N more"
 
 function openDupes() {
     DupeState.visible = true;
@@ -1431,15 +1495,22 @@ async function clusterDupe() {
         const r = await api('/api/dupes/cluster', { method: 'POST', body: JSON.stringify({}) });
         if (r.status === 'already_running') { toast('Clustering already running'); return; }
         prog.textContent = 'Clustering...';
+        DupeState.exactDupes = [];
         const poll = async () => {
             const p = await api('/api/dupes/cluster/progress');
             if (p.running) {
                 const pct = p.total > 0 ? Math.round(p.done / p.total * 100) : 0;
                 prog.textContent = `${p.phase} ${p.done}/${p.total} (${pct}%)`;
+                // Stream exact dupes as they're found
+                if (p.exact_dupes && p.exact_dupes.length > DupeState.exactDupes.length) {
+                    DupeState.exactDupes = p.exact_dupes;
+                    renderDupeFamilies();
+                }
                 clusterTimer = setTimeout(poll, 1200);
             } else {
                 prog.textContent = p.phase === 'done' ? `Done — ${p.done} pairs` : 'Error';
                 toast(p.phase === 'done' ? `Clustered ${p.done} pairs` : 'Cluster failed');
+                DupeState.exactDupes = [];
                 loadDupeStatus();
                 loadDupeFamilies();
             }
@@ -1456,6 +1527,8 @@ function onConfidenceChange() {
     DupeState.confidence = val;
     document.getElementById('dupe-conf-val').textContent = val;
     document.getElementById('dupe-threshold').textContent = `threshold ${Math.round((100 - val) * 0.4)}`;
+    DupeState.page = 1; // reset to first page on slider change
+    DupeState.expanded.clear();
     clearTimeout(famTimer);
     famTimer = setTimeout(loadDupeFamilies, 250);
 }
@@ -1463,9 +1536,19 @@ function onConfidenceChange() {
 async function loadDupeFamilies() {
     if (!DupeState.visible) return;
     try {
-        const data = await api(`/api/dupes/families?confidence=${DupeState.confidence}`);
+        const data = await api(`/api/dupes/families?confidence=${DupeState.confidence}&page=${DupeState.page}&per_page=10`);
         DupeState.families = data.families;
         DupeState.stats = data.stats;
+        DupeState.pagination = data.pagination;
+        if (data.pagination) {
+            DupeState.totalPages = data.pagination.total_pages;
+            DupeState.totalFamilies = data.pagination.total_families;
+            // Clamp page if families shrank (e.g. after resolve)
+            if (DupeState.page > DupeState.totalPages) {
+                DupeState.page = DupeState.totalPages;
+                return loadDupeFamilies();
+            }
+        }
         const present = new Set(data.families.flatMap(f => f.members.map(m => m.rel)));
         for (const rel of [...DupeState.toggles.keys()]) {
             if (!present.has(rel)) DupeState.toggles.delete(rel);
@@ -1482,12 +1565,36 @@ function renderDupeFamilies() {
     document.getElementById('dupe-summary').innerHTML = stats
         ? `<b>${stats.families}</b> families · <b>${stats.images_in_families}</b> images · <b>${stats.isolated}</b> isolated`
         : '';
-    if (!DupeState.families.length) {
-        list.innerHTML = `<div class="dupe-empty"><div class="big">🕵️</div><div>No dupe families at this confidence</div><div style="font-size:11px">Nudge the slider down to loosen the match</div></div>`;
+
+    // Exact dupes found during hashing (teaser, not actionable)
+    let exactHtml = '';
+    if (DupeState.exactDupes.length) {
+        exactHtml = `<div class="exact-dupes-bar">⚡ ${DupeState.exactDupes.length} exact dupes found during hashing — will appear in families once clustering completes</div>`;
+    }
+
+    if (!DupeState.families.length && !DupeState.exactDupes.length) {
+        list.innerHTML = `${exactHtml}<div class="dupe-empty"><div class="big">🕵️</div><div>No dupe families at this confidence</div><div style="font-size:11px">Nudge the slider down to loosen the match</div></div>`;
         return;
     }
-    list.innerHTML = DupeState.families.map((f, fi) => {
-        const members = f.members.map((m, mi) => {
+    if (!DupeState.families.length) {
+        list.innerHTML = exactHtml;
+        return;
+    }
+
+    const famNumOffset = (DupeState.page - 1) * 10;
+    const cardsHtml = DupeState.families.map((f, fi) => {
+        const isExpanded = DupeState.expanded.has(fi);
+        let visibleMembers = isExpanded ? f.members : f.members.slice(0, MEMBER_CAP);
+        if (DupeState.hideRejected) {
+            visibleMembers = visibleMembers.filter(m => (DupeState.toggles.get(m.rel) || 'keep') !== 'dump');
+        }
+        const hiddenCount = (isExpanded ? 0 : f.members.length - MEMBER_CAP)
+            + (DupeState.hideRejected ? f.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'dump').length : 0);
+
+        // Skip family entirely if all members are rejected and we're hiding
+        if (DupeState.hideRejected && visibleMembers.length === 0) return '';
+
+        const members = visibleMembers.map((m, mi) => {
             const st = DupeState.toggles.get(m.rel) || 'keep';
             const badge = st === 'dump' ? '🗑' : '✓';
             const thumb = m.id ? `/api/thumbnail/${m.id}` : '';
@@ -1498,21 +1605,176 @@ function renderDupeFamilies() {
                 <div class="fm-name">${escapeHtml(m.filename)}${m.min_dist != null ? ` · ${m.min_dist}` : ''}</div>
             </div>`;
         }).join('');
+
         const kept = f.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'keep').length;
         const dumped = f.members.length - kept;
+        const expandBtn = hiddenCount > 0
+            ? `<button class="btn" onclick="toggleExpandFamily(${fi})">${isExpanded ? 'Show less' : '+' + hiddenCount + ' more'}</button>`
+            : '';
         return `
         <div class="family-card">
             <div class="family-head">
-                <span class="fname">Family ${fi + 1}</span>
+                <span class="fname">Family ${famNumOffset + fi + 1}</span>
                 <span class="fmeta">${f.members.length} members · ${kept} keep / ${dumped} dump</span>
-                <button class="btn" style="margin-left:auto;" onclick="reviewDupeFamily(${fi})">Review side-by-side</button>
+                <button class="btn" style="margin-left:auto;" onclick="reviewDupeFamily(${fi})">Review</button>
+                <button class="btn" onclick="flipCompareFamily(${fi})">Flip</button>
                 <button class="btn danger" onclick="dumpAllDupeMembers(${fi})">Dump all</button>
-                <button class="btn primary" onclick="resolveDupeFamily(${fi})">Resolve → curated</button>
+                <button class="btn primary" onclick="resolveDupeFamily(${fi})">Resolve →</button>
             </div>
             <div class="family-strip">${members}</div>
+            ${expandBtn ? `<div style="padding:4px 12px;">${expandBtn}</div>` : ''}
         </div>`;
     }).join('');
+
+    // Pagination controls
+    const pag = DupeState.pagination;
+    let pagHtml = '';
+    if (pag && pag.total_pages > 1) {
+        pagHtml = `<div class="dupe-pagination">
+            ${DupeState.page > 1 ? `<button class="btn" onclick="dupePrevPage()">← Prev</button>` : ''}
+            <span>Family page ${DupeState.page} of ${pag.total_pages} (${pag.total_families} families)</span>
+            ${DupeState.page < pag.total_pages ? `<button class="btn" onclick="dupeNextPage()">Next →</button>` : ''}
+        </div>`;
+    }
+
+    list.innerHTML = exactHtml + cardsHtml + pagHtml;
 }
+
+function toggleExpandFamily(fi) {
+    if (DupeState.expanded.has(fi)) DupeState.expanded.delete(fi);
+    else DupeState.expanded.add(fi);
+    renderDupeFamilies();
+}
+
+function dupeNextPage() {
+    if (DupeState.page < DupeState.totalPages) {
+        DupeState.page++;
+        DupeState.expanded.clear();
+        loadDupeFamilies();
+    }
+}
+function dupePrevPage() {
+    if (DupeState.page > 1) {
+        DupeState.page--;
+        DupeState.expanded.clear();
+        loadDupeFamilies();
+    }
+}
+
+function toggleHideRejected() {
+    DupeState.hideRejected = document.getElementById('hide-rejected').checked;
+    renderDupeFamilies();
+}
+
+// ─── Flip / Slider Compare ─────────────────────────────────────────────
+
+let flipState = null;
+
+function flipCompareFamily(fi) {
+    const fam = DupeState.families[fi];
+    if (!fam || fam.members.length < 2) { toast('Need 2+ members'); return; }
+    const members = fam.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'keep');
+    const pool = members.length >= 2 ? members : fam.members;
+    flipState = { fi, members: pool, idx: 0, mode: 'flip' };
+    openFlipOverlay();
+}
+
+function openFlipOverlay() {
+    const overlay = document.getElementById('flip-overlay');
+    if (!overlay) {
+        // Create overlay if it doesn't exist
+        const el = document.createElement('div');
+        el.id = 'flip-overlay';
+        el.className = 'flip-overlay';
+        el.innerHTML = `
+            <div class="flip-toolbar">
+                <button class="btn" id="flip-mode-btn" onclick="toggleFlipMode()">Flip</button>
+                <span class="flip-counter" id="flip-counter"></span>
+                <button class="btn" onclick="flipAdvance(1)">→</button>
+                <button class="btn" onclick="flipAdvance(-1)">←</button>
+                <button class="btn" style="margin-left:auto" onclick="closeFlip()">✕ Close</button>
+            </div>
+            <div class="flip-stage" id="flip-stage"></div>
+            <div class="flip-hint">Click or use ← → keys · Press S for slider mode</div>
+        `;
+        document.body.appendChild(el);
+    }
+    document.getElementById('flip-overlay').classList.add('visible');
+    renderFlip();
+}
+
+function closeFlip() {
+    const el = document.getElementById('flip-overlay');
+    if (el) el.classList.remove('visible');
+    flipState = null;
+}
+
+function flipAdvance(dir) {
+    if (!flipState) return;
+    flipState.idx = (flipState.idx + dir + flipState.members.length) % flipState.members.length;
+    renderFlip();
+}
+
+function toggleFlipMode() {
+    if (!flipState) return;
+    flipState.mode = flipState.mode === 'flip' ? 'slider' : 'flip';
+    document.getElementById('flip-mode-btn').textContent = flipState.mode === 'flip' ? 'Flip' : 'Slider';
+    renderFlip();
+}
+
+function renderFlip() {
+    if (!flipState) return;
+    const stage = document.getElementById('flip-stage');
+    const counter = document.getElementById('flip-counter');
+    const m = flipState.members[flipState.idx];
+    counter.textContent = `${flipState.idx + 1} / ${flipState.members.length} — ${m.filename}`;
+
+    if (flipState.mode === 'flip') {
+        // Single image, click or arrow keys to cycle
+        const imgSrc = m.id ? `/api/fullimage/${m.id}` : '';
+        stage.innerHTML = `<img src="${imgSrc}" class="flip-img" onclick="flipAdvance(1)">`;
+        stage.classList.remove('slider-mode');
+        stage.onmousemove = null;
+    } else {
+        // Slider mode: current image + next one, wipe between them
+        const nextIdx = (flipState.idx + 1) % flipState.members.length;
+        const next = flipState.members[nextIdx];
+        const imgA = m.id ? `/api/fullimage/${m.id}` : '';
+        const imgB = next.id ? `/api/fullimage/${next.id}` : '';
+        stage.classList.add('slider-mode');
+        stage.innerHTML = `
+            <div class="slider-container" id="slider-container">
+                <img src="${imgB}" class="slider-img-b" id="slider-b">
+                <img src="${imgA}" class="slider-img-a" id="slider-a">
+                <div class="slider-handle" id="slider-handle"></div>
+                <div class="slider-label-left">A: ${escapeHtml(m.filename)}</div>
+                <div class="slider-label-right">B: ${escapeHtml(next.filename)}</div>
+            </div>
+        `;
+        const container = document.getElementById('slider-container');
+        const imgA_el = document.getElementById('slider-a');
+        const handle = document.getElementById('slider-handle');
+        imgA_el.style.clipPath = 'inset(0 50% 0 0)';
+        handle.style.left = '50%';
+        container.onmousemove = (e) => {
+            const rect = container.getBoundingClientRect();
+            const pct = ((e.clientX - rect.left) / rect.width) * 100;
+            const clamped = Math.max(0, Math.min(100, pct));
+            imgA_el.style.clipPath = `inset(0 ${100 - clamped}% 0 0)`;
+            handle.style.left = clamped + '%';
+        };
+    }
+}
+
+// Wire keyboard for flip overlay
+document.addEventListener('keydown', (e) => {
+    const overlay = document.getElementById('flip-overlay');
+    if (!overlay || !overlay.classList.contains('visible')) return;
+    if (e.key === 'ArrowRight') { e.preventDefault(); flipAdvance(1); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); flipAdvance(-1); }
+    else if (e.key === 's' || e.key === 'S') { e.preventDefault(); toggleFlipMode(); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeFlip(); }
+});
 
 function toggleDupeMember(fi, mi) {
     const fam = DupeState.families[fi];

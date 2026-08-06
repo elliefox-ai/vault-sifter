@@ -127,11 +127,21 @@ def save_hashes(pool_dir, hashes):
     (Path(pool_dir) / HASHES_FILE).write_text(json.dumps(hashes))
 
 
-def compute_hashes(pool_dir, progress=None):
-    """Hash any new/changed images. Returns (hashes, new_count)."""
+def compute_hashes(pool_dir, progress=None, on_exact=None):
+    """Hash any new/changed images. Returns (hashes, new_count).
+
+    If on_exact is provided, it's called as on_exact(new_rel, [existing_rels])
+    whenever an exact dupe (same phash AND dhash) is detected."""
     hashes = load_hashes(pool_dir)
     files = pool_files(pool_dir)
     new_count = 0
+
+    # Build reverse lookup from existing hashes for instant exact-dupe detection
+    seen = {}
+    for rel, h in hashes.items():
+        key = (h["ph"], h["dh"])
+        seen.setdefault(key, []).append(rel)
+
     for i, fp in enumerate(files):
         rel = os.path.relpath(fp, pool_dir)
         try:
@@ -142,6 +152,10 @@ def compute_hashes(pool_dir, progress=None):
             ph, dh = hash_image(fp)
             hashes[rel] = {"ph": ph, "dh": dh, "mtime": st.st_mtime, "size": st.st_size}
             new_count += 1
+            key = (ph, dh)
+            if key in seen and on_exact:
+                on_exact(rel, list(seen[key]))
+            seen.setdefault(key, []).append(rel)
         except Exception as e:
             print(f"  [warn] {rel}: {e}")
         if progress and (i % 50 == 0 or i == len(files) - 1):

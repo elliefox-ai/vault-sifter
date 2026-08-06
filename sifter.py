@@ -661,7 +661,10 @@ def analyze_progress():
 # ─── Dupe workflow (near-dupe review) ────────────────────────────────────────
 
 _dupe_lock = threading.Lock()
-_dupe_state = {"running": False, "phase": "", "total": 0, "done": 0, "errors": 0}
+_dupe_state = {
+    "running": False, "phase": "", "total": 0, "done": 0, "errors": 0,
+    "exact_dupes": [],  # list of {new_rel, matches: [rel, ...]}
+}
 
 
 def _pool_dir():
@@ -729,7 +732,8 @@ def dupes_cluster():
         return jsonify({"status": "already_running", **_dupe_state})
 
     with _dupe_lock:
-        _dupe_state.update(running=True, phase="hashing", total=0, done=0, errors=0)
+        _dupe_state.update(running=True, phase="hashing", total=0, done=0, errors=0,
+                           exact_dupes=[])
 
     def run():
         try:
@@ -738,7 +742,11 @@ def dupes_cluster():
                     _dupe_state["done"] = done
                     _dupe_state["total"] = total
 
-            hashes, new_count = dupefind.compute_hashes(pool, progress=prog)
+            def on_exact(new_rel, matches):
+                with _dupe_lock:
+                    _dupe_state["exact_dupes"].append({"new": new_rel, "matches": matches})
+
+            hashes, new_count = dupefind.compute_hashes(pool, progress=prog, on_exact=on_exact)
             with _dupe_lock:
                 _dupe_state["phase"] = "edges"
                 _dupe_state["done"] = 0
@@ -789,9 +797,19 @@ def dupes_families():
     fams = dupefind.families_at_threshold(a, b, d, threshold)
     rels = sorted(hashes.keys())
 
+    # Pagination: families per page (never split a family across pages)
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 10, type=int)
+    page = max(1, page)
+    per_page = max(1, min(per_page, 50))
+    total_families = len(fams)
+    total_pages = max(1, (total_families + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    page_fams = fams[(page - 1) * per_page: page * per_page]
+
     with db() as conn:
         families = []
-        for fam in fams:
+        for fam in page_fams:
             dists = dupefind.member_min_dist(fam, a, b, d)
             members = []
             for idx in fam:
@@ -813,6 +831,12 @@ def dupes_families():
         "threshold": threshold,
         "confidence": confidence,
         "stats": stats,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total_families": total_families,
+            "total_pages": total_pages,
+        },
     })
 
 
