@@ -579,14 +579,13 @@
     </div>
     <div class="dupe-section">
         <div class="dupe-row">
-            <label>Pull from folder</label>
+            <button class="btn" id="btn-cluster" onclick="clusterDupe()" style="font-weight:600">🔍 Scan this vault for dupes</button>
+            <span class="dupe-progress" id="dupe-progress"></span>
+        </div>
+        <div class="dupe-row" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+            <label style="color:var(--text-dim)">Optional: pull from another folder first</label>
             <input type="text" id="dupe-source" placeholder="\\server\\share\\folder or /path/to/folder">
             <button class="btn" onclick="pullDupe()">Pull into pool</button>
-        </div>
-        <div class="dupe-row">
-            <label>Clustering</label>
-            <button class="btn" id="btn-cluster" onclick="clusterDupe()">Find dupes</button>
-            <span class="dupe-progress" id="dupe-progress"></span>
         </div>
         <div class="dupe-row">
             <label>Confidence</label>
