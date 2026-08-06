@@ -353,6 +353,18 @@
             color: var(--text-dim);
             font-size: 12px;
         }
+        .page-btn { padding: 2px 8px !important; min-width: 28px; font-size: 11px; }
+        .page-btn.current { background: var(--accent); color: #fff; border-color: var(--accent); }
+        .page-ellipsis { color: var(--text-dim); padding: 0 4px; }
+        .page-jump { display: flex; align-items: center; gap: 4px; }
+        .page-jump input {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 3px;
+            padding: 2px 4px;
+            font-size: 12px;
+        }
 
         /* ─── Keyboard Hint ─── */
         .kbd-hint {
@@ -739,10 +751,27 @@ function renderGrid() {
     const pag = document.getElementById('pagination');
     const page = Math.floor(State.offset / State.limit) + 1;
     const totalPages = Math.ceil(State.total / State.limit) || 1;
-    // Estimate total from what we know
+
+    // Build compact page button list
+    let pageBtns = '';
+    const showPages = new Set();
+    showPages.add(1);
+    showPages.add(totalPages);
+    showPages.add(page);
+    if (page > 1) showPages.add(page - 1);
+    if (page < totalPages) showPages.add(page + 1);
+    const sorted = [...showPages].filter(p => p >= 1 && p <= totalPages).sort((a, b) => a - b);
+    let prevP = 0;
+    for (const p of sorted) {
+        if (prevP && p > prevP + 1) pageBtns += '<span class="page-ellipsis">…</span>';
+        pageBtns += `<button class="btn page-btn${p === page ? ' current' : ''}" onclick="goToPage(${p})">${p}</button>`;
+        prevP = p;
+    }
+
     pag.innerHTML = `
         ${State.offset > 0 ? `<button class="btn" onclick="prevPage()">← Prev</button>` : ''}
-        <span>Page ${page} of ${totalPages}</span>
+        <span class="page-jump"><input type="number" id="page-input" min="1" max="${totalPages}" value="${page}" onchange="goToPage(this.value)" style="width:48px;text-align:center;"> / ${totalPages}</span>
+        <span class="page-btns">${pageBtns}</span>
         ${page < totalPages ? `<button class="btn" onclick="nextPage()">Next →</button>` : ''}
     `;
 }
@@ -826,45 +855,56 @@ function closeDetail() {
 }
 
 // ─── Actions ───────────────────────────────────────────────────────────
+let _inputLocked = false;
+
 async function rateCurrent(rating) {
-    if (State.detailId === null) return;
-    await api(`/api/image/${State.detailId}/rate`, {
-        method: 'POST',
-        body: JSON.stringify({ rating }),
-    });
-    // Update local state
-    const img = State.images.find(i => i.id === State.detailId);
-    if (img) img.rating = rating;
-    openDetail(img);
-    renderGrid();
-    advanceCursor();
-    toast(`Rated ${'★'.repeat(rating)}`);
+    if (State.detailId === null || _inputLocked) return;
+    _inputLocked = true;
+    try {
+        await api(`/api/image/${State.detailId}/rate`, {
+            method: 'POST',
+            body: JSON.stringify({ rating }),
+        });
+        const img = State.images.find(i => i.id === State.detailId);
+        if (img) img.rating = rating;
+        openDetail(img);
+        renderGrid();
+        await advanceCursor();
+        toast(`Rated ${'★'.repeat(rating)}`);
+    } finally {
+        _inputLocked = false;
+    }
 }
 
 async function toggleReject() {
-    if (State.detailId === null) return;
-    const img = State.images.find(i => i.id === State.detailId);
-    const newRej = !img.rejected;
-    await api(`/api/image/${State.detailId}/reject`, {
-        method: 'POST',
-        body: JSON.stringify({ rejected: newRej }),
-    });
-    img.rejected = newRej;
-    openDetail(img);
-    renderGrid();
-    if (newRej) {
-        toast('Rejected', 'Undo', async () => {
-            await api(`/api/image/${State.detailId}/reject`, {
-                method: 'POST',
-                body: JSON.stringify({ rejected: false }),
-            });
-            img.rejected = false;
-            openDetail(img);
-            renderGrid();
+    if (State.detailId === null || _inputLocked) return;
+    _inputLocked = true;
+    try {
+        const img = State.images.find(i => i.id === State.detailId);
+        const newRej = !img.rejected;
+        await api(`/api/image/${State.detailId}/reject`, {
+            method: 'POST',
+            body: JSON.stringify({ rejected: newRej }),
         });
-        advanceCursor();
-    } else {
-        toast('Un-rejected');
+        img.rejected = newRej;
+        openDetail(img);
+        renderGrid();
+        if (newRej) {
+            toast('Rejected', 'Undo', async () => {
+                await api(`/api/image/${State.detailId}/reject`, {
+                    method: 'POST',
+                    body: JSON.stringify({ rejected: false }),
+                });
+                img.rejected = false;
+                openDetail(img);
+                renderGrid();
+            });
+            await advanceCursor();
+        } else {
+            toast('Un-rejected');
+        }
+    } finally {
+        _inputLocked = false;
     }
 }
 
@@ -943,11 +983,20 @@ async function retreatCursor() {
 function nextPage() {
     State.offset += State.limit;
     State.cursor = 0;
+    saveState();
     loadImages();
 }
 function prevPage() {
     State.offset = Math.max(0, State.offset - State.limit);
     State.cursor = 0;
+    saveState();
+    loadImages();
+}
+function goToPage(p) {
+    p = Math.max(1, Math.min(p, Math.ceil(State.total / State.limit) || 1));
+    State.offset = (p - 1) * State.limit;
+    State.cursor = 0;
+    saveState();
     loadImages();
 }
 
@@ -1126,27 +1175,37 @@ function updatePreviewHUD(img) {
 }
 
 async function rateInPreview(rating) {
-    if (State.cursor === null || !State.images[State.cursor]) return;
-    const img = State.images[State.cursor];
-    await api(`/api/image/${img.id}/rate`, { method: 'POST', body: JSON.stringify({ rating }) });
-    img.rating = rating;
-    updatePreviewHUD(img);
-    renderGrid();
-    await advanceCursor();
-    refreshPreview();
+    if (State.cursor === null || !State.images[State.cursor] || _inputLocked) return;
+    _inputLocked = true;
+    try {
+        const img = State.images[State.cursor];
+        await api(`/api/image/${img.id}/rate`, { method: 'POST', body: JSON.stringify({ rating }) });
+        img.rating = rating;
+        updatePreviewHUD(img);
+        renderGrid();
+        await advanceCursor();
+        refreshPreview();
+    } finally {
+        _inputLocked = false;
+    }
 }
 
 async function rejectInPreview() {
-    if (State.cursor === null || !State.images[State.cursor]) return;
-    const img = State.images[State.cursor];
-    const newRej = !img.rejected;
-    await api(`/api/image/${img.id}/reject`, { method: 'POST', body: JSON.stringify({ rejected: newRej }) });
-    img.rejected = newRej;
-    updatePreviewHUD(img);
-    renderGrid();
-    if (newRej) {
-        await advanceCursor();
-        refreshPreview();
+    if (State.cursor === null || !State.images[State.cursor] || _inputLocked) return;
+    _inputLocked = true;
+    try {
+        const img = State.images[State.cursor];
+        const newRej = !img.rejected;
+        await api(`/api/image/${img.id}/reject`, { method: 'POST', body: JSON.stringify({ rejected: newRej }) });
+        img.rejected = newRej;
+        updatePreviewHUD(img);
+        renderGrid();
+        if (newRej) {
+            await advanceCursor();
+            refreshPreview();
+        }
+    } finally {
+        _inputLocked = false;
     }
 }
 
