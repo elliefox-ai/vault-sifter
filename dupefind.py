@@ -21,6 +21,7 @@ Families are connected components of the pair graph at a given threshold.
 import json
 import os
 import shutil
+import multiprocessing as mp
 import time
 from pathlib import Path
 
@@ -33,6 +34,10 @@ HASHES_FILE = ".dupe-hashes.json"
 EDGES_FILE = ".dupe-edges.npz"
 MANIFEST_FILE = "manifest.json"
 TRASH_DIR = ".dupe-trash"
+
+# Hash cache version. v2 = draft-mode JPEG decode + bilinear resampling.
+# Bits differ slightly from v1 (LANCZOS), so caches are never mixed.
+HASHVER = 2
 
 # Pairs beyond this hamming distance are never candidates (bounds memory).
 MAX_DIST = 40
@@ -70,7 +75,7 @@ def _dct2d(a):
 
 def phash(img):
     """64-bit DCT perceptual hash (imagehash-style)."""
-    g = img.convert("L").resize((32, 32), Image.LANCZOS)
+    g = img.convert("L").resize((32, 32), Image.BILINEAR)
     a = np.asarray(g, dtype=np.float64)
     dct = _dct2d(a)
     low = dct[:8, :8]
@@ -80,7 +85,7 @@ def phash(img):
 
 def dhash(img):
     """64-bit gradient/difference hash — sensitive to edge layout."""
-    g = img.convert("L").resize((9, 8), Image.LANCZOS)
+    g = img.convert("L").resize((9, 8), Image.BILINEAR)
     a = np.asarray(g, dtype=np.int16)
     bits = (a[:, 1:] > a[:, :-1]).flatten()
     return int(np.packbits(bits.astype(np.uint8)).tobytes().hex(), 16)
@@ -92,9 +97,26 @@ def popcount(x):
 
 def hash_image(filepath):
     """Return (phash, dhash) for an image file, EXIF-corrected."""
-    img = Image.open(filepath)
-    img = ImageOps.exif_transpose(img)
-    return phash(img), dhash(img)
+    with Image.open(filepath) as img:
+        # JPEG fast path: request a 1/8-scale draft decode so PIL only
+        # Huffman-decodes the DC + a few AC coefficients. Exact enough for
+        # hashing at a fraction of the full decode cost.
+        img.draft("L", (64, 64))
+        img = ImageOps.exif_transpose(img)
+        return phash(img), dhash(img)
+
+
+def _hash_one(args):
+    """Worker: hash one file off-process. Returns (rel, payload) or (rel, None, err)."""
+    fp, pool_dir = args
+    rel = os.path.relpath(fp, pool_dir)
+    try:
+        st = os.stat(fp)
+        ph, dh = hash_image(fp)
+        return rel, {"ph": ph, "dh": dh, "mtime": st.st_mtime,
+                     "size": st.st_size, "v": HASHVER}
+    except Exception as e:
+        return rel, None, str(e)
 
 
 # ─── Pool scanning / caching ────────────────────────────────────────────
@@ -132,7 +154,9 @@ def compute_hashes(pool_dir, progress=None, on_exact=None):
 
     If on_exact is provided, it's called as on_exact(new_rel, [existing_rels])
     whenever an exact dupe (same phash AND dhash) is detected."""
-    hashes = load_hashes(pool_dir)
+    # Drop stale-version cache entries so v1/v2 hashes never mix.
+    hashes = {rel: h for rel, h in load_hashes(pool_dir).items()
+              if h.get("v") == HASHVER}
     files = pool_files(pool_dir)
     new_count = 0
 
@@ -142,24 +166,55 @@ def compute_hashes(pool_dir, progress=None, on_exact=None):
         key = (h["ph"], h["dh"])
         seen.setdefault(key, []).append(rel)
 
-    for i, fp in enumerate(files):
+    to_hash = []
+    for fp in files:
         rel = os.path.relpath(fp, pool_dir)
+        h = hashes.get(rel)
         try:
             st = os.stat(fp)
-            h = hashes.get(rel)
-            if h and h.get("mtime") == st.st_mtime and h.get("size") == st.st_size:
-                continue
-            ph, dh = hash_image(fp)
-            hashes[rel] = {"ph": ph, "dh": dh, "mtime": st.st_mtime, "size": st.st_size}
+        except OSError as e:
+            print(f"  [warn] {rel}: {e}")
+            continue
+        if h and h.get("mtime") == st.st_mtime and h.get("size") == st.st_size:
+            continue
+        to_hash.append((fp, pool_dir))
+
+    done = len(files) - len(to_hash)
+    if progress:
+        progress(done, len(files))
+
+    def _absorb(result):
+        nonlocal done, new_count
+        rel, payload, *err = result
+        if payload is None:
+            print(f"  [warn] {rel}: {err[0] if err else 'unknown'}")
+        else:
+            hashes[rel] = payload
             new_count += 1
-            key = (ph, dh)
+            key = (payload["ph"], payload["dh"])
             if key in seen and on_exact:
                 on_exact(rel, list(seen[key]))
             seen.setdefault(key, []).append(rel)
-        except Exception as e:
-            print(f"  [warn] {rel}: {e}")
-        if progress and (i % 50 == 0 or i == len(files) - 1):
-            progress(i + 1, len(files))
+        done += 1
+        if progress and (done % 50 == 0 or done == len(files)):
+            progress(done, len(files))
+
+    # Parallel hashing pays off above a few dozen images; below that,
+    # process spawn overhead (esp. on Windows) outweighs the gain.
+    if len(to_hash) >= 32:
+        nproc = min(mp.cpu_count() or 1, 8)
+        try:
+            with mp.get_context("spawn").Pool(nproc) as poolr:
+                for result in poolr.imap_unordered(_hash_one, to_hash, chunksize=16):
+                    _absorb(result)
+        except (OSError, ImportError, PermissionError):
+            # Sandboxed/restricted environments: fall back to serial.
+            for t in to_hash:
+                _absorb(_hash_one(t))
+    else:
+        for t in to_hash:
+            _absorb(_hash_one(t))
+
     save_hashes(pool_dir, hashes)
     return hashes, new_count
 
