@@ -583,6 +583,39 @@ def reindex():
     return jsonify(result)
 
 
+@app.route("/api/vault")
+def current_vault():
+    return jsonify({"vault": VAULT_ROOT})
+
+
+@app.route("/api/load", methods=["POST"])
+def load_vault():
+    """Hot-switch the vault folder without restarting the server."""
+    global VAULT_ROOT
+    raw = (request.json or {}).get("path", "")
+    # Windows "Copy as path" gives quoted paths; tolerate that
+    path = raw.strip().strip('"').strip("'")
+    if not path:
+        return jsonify({"error": "No path given"}), 400
+    resolved = Path(path).resolve()
+    if not resolved.is_dir():
+        return jsonify({"error": f"Not a directory: {resolved}"}), 400
+
+    VAULT_ROOT = str(resolved)
+    init_db()  # per-vault DB (hash of path), so ratings never mix
+
+    def _bg_index():
+        try:
+            result = index_directory(VAULT_ROOT, force=False)
+            print(f"  [load-vault] {VAULT_ROOT}: {result['indexed']} indexed, "
+                  f"{result['skipped']} skipped, {result['errors']} errors")
+        except Exception as e:
+            print(f"  [load-vault] indexing error: {e}")
+
+    threading.Thread(target=_bg_index, daemon=True).start()
+    return jsonify({"status": "ok", "vault": VAULT_ROOT})
+
+
 _analysis_lock = threading.Lock()
 _analysis_state = {"running": False, "total": 0, "done": 0, "errors": 0}
 

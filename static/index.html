@@ -543,7 +543,7 @@
 <body>
 
 <div class="topbar">
-    <div class="logo">Vault<span>Sifter</span></div>
+    <div class="logo">Vault<span>Sifter</span><div id="vault-display" style="font-size:10px;color:var(--text-dim);font-weight:normal;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title=""></div></div>
     <div class="stats">
         <span>Total: <b id="stat-total">—</b></span>
         <span>Unrated: <b id="stat-unrated">—</b></span>
@@ -575,6 +575,9 @@
         <button class="btn" id="btn-analyze" title="Run quality analysis">Analyze</button>
         <button class="btn" id="btn-reindex" title="Re-index vault">Re-index</button>
         <button class="btn" id="btn-dupes" title="Near-dupe review">Dupes</button>
+        <input type="text" id="load-path" list="vault-recent" placeholder="E:\\path\\to\\vault" style="width: 170px;" title="Type a folder path, then click Load Folder (or press Enter)">
+        <datalist id="vault-recent"></datalist>
+        <button class="btn" id="btn-load" title="Switch to a different folder without restarting">Load Folder</button>
     </div>
 </div>
 
@@ -1430,6 +1433,61 @@ document.getElementById('btn-reindex').addEventListener('click', async () => {
     toast(`Indexed ${result.indexed} new, skipped ${result.skipped}`);
     loadImages();
 });
+
+// ─── Load Folder (hot-switch vault) ───────────────────────────────────
+async function showVault() {
+    try {
+        const v = await api('/api/vault');
+        const el = document.getElementById('vault-display');
+        el.textContent = v.vault || 'no vault loaded';
+        el.title = v.vault || '';
+    } catch (e) {}
+}
+
+function renderRecentVaults() {
+    try {
+        const recent = JSON.parse(localStorage.getItem('vault-recent') || '[]');
+        document.getElementById('vault-recent').innerHTML =
+            recent.map(x => `<option value="${String(x).replace(/"/g, '&quot;')}">`).join('');
+    } catch (e) {}
+}
+
+function rememberVault(p) {
+    try {
+        let recent = JSON.parse(localStorage.getItem('vault-recent') || '[]');
+        recent = [p, ...recent.filter(x => x !== p)].slice(0, 8);
+        localStorage.setItem('vault-recent', JSON.stringify(recent));
+        renderRecentVaults();
+    } catch (e) {}
+}
+
+async function loadVault() {
+    const input = document.getElementById('load-path');
+    const p = input.value.trim().replace(/^"|"$/g, '');
+    if (!p) { toast('Type a folder path first'); return; }
+    toast('Loading vault...');
+    try {
+        const r = await api('/api/load', { method: 'POST', body: JSON.stringify({ path: p }) });
+        rememberVault(r.vault);
+        State.offset = 0;
+        State.cursor = 0;
+        State.selected.clear();
+        State.detailId = null;
+        showVault();
+        loadImages();
+        toast(`Loaded — indexing ${r.vault} in background`);
+        input.value = '';
+    } catch (e) {
+        toast(`Load failed: ${e.message}`);
+    }
+}
+
+document.getElementById('btn-load').addEventListener('click', loadVault);
+document.getElementById('load-path').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); loadVault(); }
+});
+showVault();
+renderRecentVaults();
 
 document.getElementById('preview').addEventListener('click', closePreview);
 document.getElementById('compare').addEventListener('click', closeCompare);
