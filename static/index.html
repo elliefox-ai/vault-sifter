@@ -640,6 +640,7 @@
     <div class="dupe-section">
         <div class="dupe-row">
             <button class="btn" id="btn-cluster" onclick="clusterDupe()" style="font-weight:600">🔍 Scan this vault for dupes</button>
+            <button class="btn" id="btn-stop-cluster" onclick="stopCluster()" style="display:none">⏹ Stop</button>
             <span class="dupe-progress" id="dupe-progress"></span>
         </div>
         <div class="dupe-row" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
@@ -1634,6 +1635,8 @@ async function clusterDupe() {
         if (r.status === 'already_running') { toast('Clustering already running'); return; }
         prog.textContent = 'Clustering...';
         DupeState.exactDupes = [];
+        document.getElementById('btn-cluster').style.display = 'none';
+        document.getElementById('btn-stop-cluster').style.display = '';
         const poll = async () => {
             const p = await api('/api/dupes/cluster/progress');
             if (p.running) {
@@ -1646,8 +1649,18 @@ async function clusterDupe() {
                 }
                 clusterTimer = setTimeout(poll, 1200);
             } else {
-                prog.textContent = p.phase === 'done' ? `Done — ${p.done} pairs` : 'Error';
-                toast(p.phase === 'done' ? `Clustered ${p.done} pairs` : 'Cluster failed');
+                document.getElementById('btn-cluster').style.display = '';
+                document.getElementById('btn-stop-cluster').style.display = 'none';
+                if (p.phase === 'done') {
+                    prog.textContent = `Done — ${p.done} pairs`;
+                    toast(`Clustered ${p.done} pairs`);
+                } else if (p.phase === 'stopped') {
+                    prog.textContent = `Stopped — ${p.done} hashed (saved, resumable)`;
+                    toast('Scan stopped — progress saved, resume anytime');
+                } else {
+                    prog.textContent = 'Error';
+                    toast('Cluster failed');
+                }
                 DupeState.exactDupes = [];
                 loadDupeStatus();
                 loadDupeFamilies();
@@ -1656,6 +1669,15 @@ async function clusterDupe() {
         clusterTimer = setTimeout(poll, 800);
     } catch (e) {
         toast('Cluster error: ' + e.message);
+    }
+}
+
+async function stopCluster() {
+    try {
+        await api('/api/dupes/cluster/stop', { method: 'POST', body: JSON.stringify({}) });
+        toast('Stopping at next checkpoint...');
+    } catch (e) {
+        toast('Stop failed: ' + e.message);
     }
 }
 

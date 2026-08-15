@@ -707,6 +707,7 @@ _dupe_lock = threading.Lock()
 _dupe_state = {
     "running": False, "phase": "", "total": 0, "done": 0, "errors": 0,
     "exact_dupes": [],  # list of {new_rel, matches: [rel, ...]}
+    "stop_requested": False,
 }
 
 
@@ -776,7 +777,7 @@ def dupes_cluster():
 
     with _dupe_lock:
         _dupe_state.update(running=True, phase="hashing", total=0, done=0, errors=0,
-                           exact_dupes=[])
+                           exact_dupes=[], stop_requested=False)
 
     def run():
         try:
@@ -789,12 +790,26 @@ def dupes_cluster():
                 with _dupe_lock:
                     _dupe_state["exact_dupes"].append({"new": new_rel, "matches": matches})
 
-            hashes, new_count = dupefind.compute_hashes(pool, progress=prog, on_exact=on_exact)
+            def should_stop():
+                with _dupe_lock:
+                    return _dupe_state["stop_requested"]
+
+            hashes, new_count, stopped = dupefind.compute_hashes(
+                pool, progress=prog, on_exact=on_exact, should_stop=should_stop)
+            if stopped:
+                with _dupe_lock:
+                    _dupe_state.update(running=False, phase="stopped",
+                                       done=len(hashes), total=len(hashes), errors=0)
+                return
             with _dupe_lock:
                 _dupe_state["phase"] = "edges"
                 _dupe_state["done"] = 0
                 _dupe_state["total"] = len(hashes)
-            a, b, d = dupefind.compute_edges(hashes, progress=prog)
+            a, b, d = dupefind.compute_edges(hashes, progress=prog, should_stop=should_stop)
+            if a is None:
+                with _dupe_lock:
+                    _dupe_state.update(running=False, phase="stopped", errors=0)
+                return
             dupefind.save_edges(pool, a, b, d)
             with _dupe_lock:
                 _dupe_state.update(running=False, phase="done", done=len(d), total=len(d), errors=0)
@@ -805,6 +820,16 @@ def dupes_cluster():
 
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"status": "started", **_dupe_state})
+
+
+@app.route("/api/dupes/cluster/stop", methods=["POST"])
+def dupes_cluster_stop():
+    """Gracefully stop a running scan at the next checkpoint. Progress is kept."""
+    with _dupe_lock:
+        if not _dupe_state["running"]:
+            return jsonify({"status": "not_running"})
+        _dupe_state["stop_requested"] = True
+    return jsonify({"status": "stopping"})
 
 
 @app.route("/api/dupes/cluster/progress")

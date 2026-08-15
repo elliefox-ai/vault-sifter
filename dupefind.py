@@ -41,6 +41,8 @@ HASHVER = 2
 
 # Pairs beyond this hamming distance are never candidates (bounds memory).
 MAX_DIST = 40
+# Save the hash cache every N images so interrupted scans resume, not restart.
+CHECKPOINT_EVERY = 500
 # Confidence slider (0=loosest … 100=strictest) -> hamming threshold mapping.
 def threshold_for_confidence(confidence):
     """confidence 100 -> threshold 0 (only near-identical), 0 -> 40 (very loose)."""
@@ -149,11 +151,12 @@ def save_hashes(pool_dir, hashes):
     (Path(pool_dir) / HASHES_FILE).write_text(json.dumps(hashes))
 
 
-def compute_hashes(pool_dir, progress=None, on_exact=None):
-    """Hash any new/changed images. Returns (hashes, new_count).
+def compute_hashes(pool_dir, progress=None, on_exact=None, should_stop=None):
+    """Hash any new/changed images. Returns (hashes, new_count, stopped).
 
-    If on_exact is provided, it's called as on_exact(new_rel, [existing_rels])
-    whenever an exact dupe (same phash AND dhash) is detected."""
+    Checkpoints every CHECKPOINT_EVERY images so an interrupted scan
+    keeps its progress. If should_stop() returns truthy, hashing halts
+    early and remaining files are simply skipped (resumable)."""
     # Drop stale-version cache entries so v1/v2 hashes never mix.
     hashes = {rel: h for rel, h in load_hashes(pool_dir).items()
               if h.get("v") == HASHVER}
@@ -183,8 +186,10 @@ def compute_hashes(pool_dir, progress=None, on_exact=None):
     if progress:
         progress(done, len(files))
 
+    stopped = False
+
     def _absorb(result):
-        nonlocal done, new_count
+        nonlocal done, new_count, stopped
         rel, payload, *err = result
         if payload is None:
             print(f"  [warn] {rel}: {err[0] if err else 'unknown'}")
@@ -205,24 +210,45 @@ def compute_hashes(pool_dir, progress=None, on_exact=None):
         nproc = min(mp.cpu_count() or 1, 8)
         try:
             with mp.get_context("spawn").Pool(nproc) as poolr:
-                for result in poolr.imap_unordered(_hash_one, to_hash, chunksize=16):
+                pending = poolr.imap_unordered(_hash_one, to_hash, chunksize=16)
+                while True:
+                    try:
+                        result = next(pending)
+                    except StopIteration:
+                        break
                     _absorb(result)
+                    if should_stop and should_stop():
+                        stopped = True
+                        break
+                    if done % CHECKPOINT_EVERY < 16:
+                        save_hashes(pool_dir, hashes)
+            poolr.terminate()
         except (OSError, ImportError, PermissionError):
             # Sandboxed/restricted environments: fall back to serial.
             for t in to_hash:
+                if should_stop and should_stop():
+                    stopped = True
+                    break
                 _absorb(_hash_one(t))
+                if done % CHECKPOINT_EVERY == 0:
+                    save_hashes(pool_dir, hashes)
     else:
         for t in to_hash:
+            if should_stop and should_stop():
+                stopped = True
+                break
             _absorb(_hash_one(t))
+            if done % CHECKPOINT_EVERY == 0:
+                save_hashes(pool_dir, hashes)
 
     save_hashes(pool_dir, hashes)
-    return hashes, new_count
+    return hashes, new_count, stopped
 
 
 # ─── Pair edges ─────────────────────────────────────────────────────────
 
-def compute_edges(hashes, progress=None):
-    """All pairs with dist <= MAX_DIST. Returns (a, b, d) numpy arrays."""
+def compute_edges(hashes, progress=None, should_stop=None):
+    """All pairs with dist <= MAX_DIST. Returns (a, b, d) or None if stopped."""
     rels = sorted(hashes.keys())
     n = len(rels)
     if n < 2:
@@ -234,6 +260,8 @@ def compute_edges(hashes, progress=None):
     a_list, b_list, d_list = [], [], []
     chunk = 512
     for i0 in range(0, n, chunk):
+        if should_stop and should_stop():
+            return None
         i1 = min(i0 + chunk, n)
         for j0 in range(i0, n, chunk):
             j1 = min(j0 + chunk, n)
