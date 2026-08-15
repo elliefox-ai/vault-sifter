@@ -744,7 +744,20 @@ async function loadImages() {
     params.set('limit', State.limit);
     params.set('offset', State.offset);
 
-    const data = await api(`/api/images?${params}`);
+    let data;
+    try {
+        data = await api(`/api/images?${params}`);
+    } catch (e) {
+        if (String(e.message).startsWith('409')) {
+            State.images = [];
+            State.total = 0;
+            const grid = document.getElementById('grid');
+            grid.innerHTML = '<div class="empty"><div class="big">📁</div><div>No vault loaded</div><div>Paste a folder path in the box above, then press Enter or click Load Folder</div></div>';
+            document.getElementById('pagination').innerHTML = '';
+            return;
+        }
+        throw e;
+    }
     State.images = data.images;
     State.total = data.total;
     // Clamp cursor to valid range after page load

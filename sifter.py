@@ -40,6 +40,16 @@ def check_origin():
         if origin and "localhost" not in origin and "127.0.0.1" not in origin:
             return jsonify({"error": "Cross-origin requests not allowed"}), 403
 
+
+@app.before_request
+def require_vault():
+    """Vault-less mode: only the loader endpoints work until a folder is loaded."""
+    if VAULT_ROOT is None:
+        allowed = request.path == "/" or request.path.startswith("/static") \
+            or request.path in ("/api/vault", "/api/load")
+        if not allowed:
+            return jsonify({"error": "No vault loaded — use Load Folder in the UI"}), 409
+
 VAULT_HOME = Path.home() / ".vault-sifter"
 THUMB_DIR = VAULT_HOME / "thumbnails"
 VAULT_ROOT = None
@@ -954,35 +964,38 @@ def main():
                 return
     else:
         parser = argparse.ArgumentParser(description="Vault Sifter — review your image generation vault")
-        parser.add_argument("vault", help="Path to your image vault directory")
+        parser.add_argument("vault", nargs="?", default=None, help="Path to your image vault directory (optional — can be loaded via the UI)")
         parser.add_argument("--port", type=int, default=8844, help="Port to serve on")
         parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
         parser.add_argument("--force", action="store_true", help="Force re-index all images")
         args = parser.parse_args()
-        vault_path = Path(args.vault)
+        vault_path = Path(args.vault) if args.vault else None
 
-    vault_path = vault_path.resolve()
-    if not vault_path.is_dir():
-        print(f"Error: {vault_path} is not a directory")
-        return
-
-    VAULT_ROOT = str(vault_path)
-    init_db()
+    if vault_path is not None:
+        vault_path = vault_path.resolve()
+        if not vault_path.is_dir():
+            print(f"Error: {vault_path} is not a directory")
+            return
+        VAULT_ROOT = str(vault_path)
+        init_db()
 
     url = f"http://{args.host}:{args.port}"
     print(f"Vault Sifter")
-    print(f"  Vault: {vault_path}")
-    print(f"  DB: {DB_PATH}")
+    print(f"  Vault: {VAULT_ROOT if vault_path else '(none — use Load Folder in the UI)'}")
+    if DB_PATH:
+        print(f"  DB: {DB_PATH}")
     print(f"  Serving on {url}")
     print()
-    print("Indexing in background...")
 
-    def _bg_index():
-        result = index_directory(vault_path, force=args.force)
-        print(f"  Indexing complete: {result['indexed']} indexed, {result['skipped']} skipped, {result['errors']} errors")
+    if vault_path is not None:
+        print("Indexing in background...")
 
-    import threading
-    threading.Thread(target=_bg_index, daemon=True).start()
+        def _bg_index():
+            result = index_directory(vault_path, force=args.force)
+            print(f"  Indexing complete: {result['indexed']} indexed, {result['skipped']} skipped, {result['errors']} errors")
+
+        import threading
+        threading.Thread(target=_bg_index, daemon=True).start()
 
     # Auto-open browser in exe mode
     if getattr(sys, 'frozen', False):
