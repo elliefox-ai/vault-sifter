@@ -95,12 +95,14 @@
         /* ─── Sidebar ─── */
         .sidebar {
             width: 340px;
-            min-width: 340px;
+            min-width: 240px;
+            max-width: 80vw;
             background: var(--surface);
             border-right: 1px solid var(--border);
             display: none;
             flex-direction: column;
-            overflow-y: auto;
+            resize: horizontal;
+            overflow: auto;
         }
         .sidebar.visible { display: flex; }
         .detail-img {
@@ -662,7 +664,7 @@
 <div class="toast" id="toast"></div>
 
 <div class="kbd-hint">
-    <kbd>J</kbd>/<kbd>K</kbd> nav · <kbd>1-5</kbd> rate · <kbd>X</kbd> reject · <kbd>F</kbd> flag · <kbd>Space</kbd> preview (rate + nav works inside!) · <kbd>C</kbd> compare · <kbd>Esc</kbd> close
+    <kbd>J</kbd>/<kbd>K</kbd> nav · <kbd>1-5</kbd> rate · <kbd>X</kbd> reject · <kbd>F</kbd> flag · <kbd>Space</kbd> preview (rate/nav/flag inside!) · <kbd>Backspace</kbd> undo · <kbd>C</kbd> compare · <kbd>Esc</kbd> close
 </div>
 
 <script>
@@ -930,16 +932,45 @@ function closeDetail() {
 // ─── Actions ───────────────────────────────────────────────────────────
 let _inputLocked = false;
 
+// ─── Undo (global, Backspace / Ctrl+Z) ──────────────────────────────
+const UndoStack = [];
+function pushUndo(entry) {
+    UndoStack.push(entry);
+    if (UndoStack.length > 50) UndoStack.shift();
+}
+async function undoLast() {
+    const u = UndoStack.pop();
+    if (!u) { toast('Nothing to undo'); return; }
+    try {
+        await api(u.url, { method: 'POST', body: JSON.stringify(u.body) });
+        const img = State.images.find(i => i.id === u.id);
+        if (img) Object.assign(img, u.patch);
+        if (State.detailId === u.id && img) openDetail(img);
+        if (document.getElementById('preview').classList.contains('visible')
+            && State.images[State.cursor] && State.images[State.cursor].id === u.id) {
+            refreshPreview();
+        }
+        renderGrid();
+        toast(u.label);
+    } catch (e) {
+        toast(`Undo failed: ${e.message}`);
+    }
+}
+
 async function rateCurrent(rating) {
     if (State.detailId === null || _inputLocked) return;
     _inputLocked = true;
     try {
+        const img = State.images.find(i => i.id === State.detailId);
+        const prev = img ? (img.rating || 0) : 0;
         await api(`/api/image/${State.detailId}/rate`, {
             method: 'POST',
             body: JSON.stringify({ rating }),
         });
-        const img = State.images.find(i => i.id === State.detailId);
         if (img) img.rating = rating;
+        pushUndo({ id: State.detailId, url: `/api/image/${State.detailId}/rate`,
+            body: { rating: prev }, patch: { rating: prev },
+            label: `Undone — rating back to ${'★'.repeat(prev) || 'none'}` });
         openDetail(img);
         renderGrid();
         await advanceCursor();
@@ -960,18 +991,14 @@ async function toggleReject() {
             body: JSON.stringify({ rejected: newRej }),
         });
         img.rejected = newRej;
+        const prevRej = !newRej; // value before this action
+        pushUndo({ id: img.id, url: `/api/image/${img.id}/reject`,
+            body: { rejected: prevRej }, patch: { rejected: prevRej },
+            label: prevRej ? 'Undone — rejected again' : 'Undone — reject removed' });
         openDetail(img);
         renderGrid();
         if (newRej) {
-            toast('Rejected', 'Undo', async () => {
-                await api(`/api/image/${State.detailId}/reject`, {
-                    method: 'POST',
-                    body: JSON.stringify({ rejected: false }),
-                });
-                img.rejected = false;
-                openDetail(img);
-                renderGrid();
-            });
+            toast('Rejected — Backspace to undo');
             await advanceCursor();
         } else {
             toast('Un-rejected');
@@ -990,6 +1017,9 @@ async function toggleFlag() {
         body: JSON.stringify({ flag: newFlag }),
     });
     img.flag = newFlag;
+    pushUndo({ id: img.id, url: `/api/image/${img.id}/flag`,
+        body: { flag: !newFlag }, patch: { flag: !newFlag },
+        label: newFlag ? 'Undone — flag removed' : 'Undone — flagged again' });
     openDetail(img);
     renderGrid();
     toast(newFlag ? 'Flagged ⚑' : 'Unflagged');
@@ -1252,8 +1282,12 @@ async function rateInPreview(rating) {
     _inputLocked = true;
     try {
         const img = State.images[State.cursor];
+        const prev = img.rating || 0;
         await api(`/api/image/${img.id}/rate`, { method: 'POST', body: JSON.stringify({ rating }) });
         img.rating = rating;
+        pushUndo({ id: img.id, url: `/api/image/${img.id}/rate`,
+            body: { rating: prev }, patch: { rating: prev },
+            label: `Undone — rating back to ${'★'.repeat(prev) || 'none'}` });
         updatePreviewHUD(img);
         renderGrid();
         await advanceCursor();
@@ -1271,6 +1305,9 @@ async function rejectInPreview() {
         const newRej = !img.rejected;
         await api(`/api/image/${img.id}/reject`, { method: 'POST', body: JSON.stringify({ rejected: newRej }) });
         img.rejected = newRej;
+        pushUndo({ id: img.id, url: `/api/image/${img.id}/reject`,
+            body: { rejected: !newRej }, patch: { rejected: !newRej },
+            label: newRej ? 'Undone — reject removed' : 'Undone — rejected again' });
         updatePreviewHUD(img);
         renderGrid();
         if (newRej) {
@@ -1284,6 +1321,24 @@ async function rejectInPreview() {
 
 function closePreview() {
     document.getElementById('preview').classList.remove('visible');
+}
+
+async function flagInPreview() {
+    if (State.cursor === null || !State.images[State.cursor] || _inputLocked) return;
+    _inputLocked = true;
+    try {
+        const img = State.images[State.cursor];
+        const newFlag = !img.flag;
+        await api(`/api/image/${img.id}/flag`, { method: 'POST', body: JSON.stringify({ flag: newFlag }) });
+        img.flag = newFlag;
+        pushUndo({ id: img.id, url: `/api/image/${img.id}/flag`,
+            body: { flag: !newFlag }, patch: { flag: !newFlag },
+            label: newFlag ? 'Undone — flag removed' : 'Undone — flagged again' });
+        updatePreviewHUD(img);
+        renderGrid();
+    } finally {
+        _inputLocked = false;
+    }
 }
 
 // ─── Toast ─────────────────────────────────────────────────────────────
@@ -1338,11 +1393,19 @@ document.addEventListener('keydown', (e) => {
                 rateInPreview(0); e.preventDefault(); return;
             case 'x':
                 rejectInPreview(); e.preventDefault(); return;
+            case 'f':
+                flagInPreview(); e.preventDefault(); return;
+            case 'Backspace':
+                e.preventDefault(); undoLast(); return;
             default: return;
         }
     }
     if (document.getElementById('compare').classList.contains('visible')) return;
     if (DupeState.visible) return; // dupe panel: gallery keys suppressed
+
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+        undoLast(); e.preventDefault(); return;
+    }
 
     switch (e.key) {
         case 'j': case 'ArrowRight': case 'ArrowDown':
@@ -1361,6 +1424,8 @@ document.addEventListener('keydown', (e) => {
             openPreview(); e.preventDefault(); break;
         case 'c':
             openCompare(); break;
+        case 'Backspace':
+            undoLast(); e.preventDefault(); break;
     }
 });
 
