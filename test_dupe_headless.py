@@ -178,7 +178,7 @@ def main():
 
     # ── 2. Cluster ──
     print("\n=== dupe_cluster ===")
-    hashes, new_count = dupefind.compute_hashes(pool)
+    hashes, new_count, _stopped = dupefind.compute_hashes(pool)
     assert len(hashes) == 6, f"expected 6 hashed, got {len(hashes)}"
     a, b, d = dupefind.compute_edges(hashes)
     dupefind.save_edges(pool, a, b, d)
@@ -218,7 +218,7 @@ def main():
     # ── 3. Re-run idempotency ──
     print("\n=== idempotency ===")
     before = len(dupefind.load_hashes(pool))
-    hashes2, new2 = dupefind.compute_hashes(pool)
+    hashes2, new2, _ = dupefind.compute_hashes(pool)
     assert new2 == 0, f"re-run should hash nothing new, got {new2}"
     print("  OK: checkpointed, 0 new hashes on re-run")
 
