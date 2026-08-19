@@ -542,6 +542,42 @@
         }
         .slider-label-left { left: 8px; }
         .slider-label-right { right: 8px; }
+        /* ─── Duel Compare (side-by-side + slider, pairwise elimination) ─── */
+        .duel-pair {
+            display: flex; gap: 16px; align-items: flex-start; justify-content: center;
+            width: 100%; padding: 0 24px; box-sizing: border-box;
+        }
+        .duel-side {
+            display: flex; flex-direction: column; align-items: center; gap: 8px;
+            max-width: 46vw; cursor: pointer; border-radius: 8px; padding: 8px;
+            border: 2px solid transparent; transition: border-color 0.12s, background 0.12s;
+        }
+        .duel-side:hover { border-color: var(--border); background: rgba(255,255,255,0.03); }
+        .duel-side.suggested { border-color: var(--accent); }
+        .duel-img {
+            max-width: 46vw; max-height: 72vh; object-fit: contain;
+            border-radius: 4px; display: block;
+        }
+        .duel-caption {
+            font-size: 12px; color: var(--text-dim); text-align: center; line-height: 1.5;
+        }
+        .duel-fname {
+            font-size: 11px; color: var(--text); word-break: break-all;
+        }
+        .duel-qbadge {
+            font-weight: 700; font-size: 11px; background: rgba(0,0,0,0.4);
+            padding: 1px 6px; border-radius: 3px; margin-left: 4px;
+        }
+        .duel-actionbar {
+            display: flex; gap: 10px; align-items: center; justify-content: center;
+            padding: 14px; width: 100%; box-sizing: border-box;
+        }
+        .duel-actionbar .btn { font-size: 13px; padding: 8px 18px; }
+        .duel-actionbar .btn.primary { background: var(--accent); border-color: var(--accent); color: #000; font-weight: 600; }
+        .duel-done {
+            display: flex; flex-direction: column; align-items: center; gap: 12px;
+        }
+        #duel-undo-btn:disabled { opacity: 0.35; cursor: default; }
     </style>
 </head>
 <body>
@@ -1377,6 +1413,9 @@ document.addEventListener('keydown', (e) => {
         return;
     }
 
+    // Duel overlay open: it owns the keyboard
+    if (document.getElementById('duel-overlay')?.classList.contains('visible')) return;
+
     if (e.key === 'Escape') {
         closePreview();
         closeCompare();
@@ -1786,6 +1825,7 @@ function renderDupeFamilies() {
                 <span class="fname">Family ${famNumOffset + fi + 1}</span>
                 <span class="fmeta">${f.members.length} members · ${kept} keep / ${dumped} dump</span>
                 <button class="btn" style="margin-left:auto;" onclick="reviewDupeFamily(${fi})">Review</button>
+                <button class="btn" onclick="duelFamily(${fi})" title="Fast pairwise keep/dump review">⚔ Duel</button>
                 <button class="btn" onclick="flipCompareFamily(${fi})">Flip</button>
                 <button class="btn danger" onclick="dumpAllDupeMembers(${fi})">Dump all</button>
                 <button class="btn primary" onclick="resolveDupeFamily(${fi})">Resolve →</button>
@@ -1834,6 +1874,245 @@ function toggleHideRejected() {
     DupeState.hideRejected = document.getElementById('hide-rejected').checked;
     renderDupeFamilies();
 }
+
+// ─── Duel: pairwise elimination compare (side-by-side / slider) ────────
+//
+// Instead of judging a whole family at once, walk it as a series of 1-on-1
+// duels: champion vs challenger, pick a winner, next challenger steps up.
+// That's N-1 decisions for N members instead of an N-way judgment call.
+// Winners flow back into DupeState.toggles as 'keep', losers as 'dump',
+// so the family strip + Resolve button downstream just work once you're done.
+
+let duelState = null;
+
+function duelFamily(fi) {
+    const fam = DupeState.families[fi];
+    if (!fam) return;
+    // Only duel members not already dumped by hand — respect existing calls.
+    const contenders = fam.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'keep');
+    if (contenders.length < 2) { toast('Need 2+ keepers to duel'); return; }
+
+    duelState = {
+        fi,
+        mode: 'sidebyside', // 'sidebyside' | 'slider'
+        champion: contenders[0],
+        queue: contenders.slice(2),
+        challenger: contenders[1],
+        totalStart: contenders.length,
+        decided: 0,
+        history: [], // {champion, challenger, queue, decided, toggleSnapshot}
+        done: false,
+    };
+    openDuelOverlay();
+}
+
+function openDuelOverlay() {
+    let overlay = document.getElementById('duel-overlay');
+    if (!overlay) {
+        const el = document.createElement('div');
+        el.id = 'duel-overlay';
+        el.className = 'flip-overlay';
+        el.innerHTML = `
+            <div class="flip-toolbar">
+                <button class="btn" id="duel-mode-btn" onclick="toggleDuelMode()">Slider view</button>
+                <span class="flip-counter" id="duel-counter"></span>
+                <button class="btn" id="duel-undo-btn" onclick="duelUndo()">↩ Undo</button>
+                <button class="btn" style="margin-left:auto" onclick="closeDuel()">✕ Close</button>
+            </div>
+            <div class="flip-stage" id="duel-stage"></div>
+            <div class="duel-actionbar" id="duel-actionbar"></div>
+            <div class="flip-hint">← keep left · → keep right · ↓ keep both · Backspace undo</div>
+        `;
+        document.body.appendChild(el);
+        overlay = el;
+    }
+    overlay.classList.add('visible');
+    renderDuel();
+}
+
+function closeDuel() {
+    const el = document.getElementById('duel-overlay');
+    if (el) el.classList.remove('visible');
+    duelState = null;
+}
+
+function toggleDuelMode() {
+    if (!duelState) return;
+    duelState.mode = duelState.mode === 'sidebyside' ? 'slider' : 'sidebyside';
+    document.getElementById('duel-mode-btn').textContent =
+        duelState.mode === 'sidebyside' ? 'Slider view' : 'Side-by-side view';
+    renderDuel();
+}
+
+function qualityBadge(m) {
+    if (m.quality_score == null) return '';
+    const color = m.quality_score >= 75 ? 'var(--good)' : m.quality_score >= 50 ? 'var(--warn)' : 'var(--bad)';
+    return `<span class="duel-qbadge" style="color:${color}">Q ${m.quality_score.toFixed(0)}</span>`;
+}
+
+function duelSuggestedSide() {
+    // Purely advisory — never auto-decides. Only surfaces when scores exist and differ.
+    const d = duelState;
+    if (!d || d.champion.quality_score == null || d.challenger.quality_score == null) return null;
+    if (d.champion.quality_score === d.challenger.quality_score) return null;
+    return d.champion.quality_score > d.challenger.quality_score ? 'a' : 'b';
+}
+
+function renderDuel() {
+    if (!duelState) return;
+    const d = duelState;
+    const stage = document.getElementById('duel-stage');
+    const counter = document.getElementById('duel-counter');
+    const remaining = d.queue.length + 1; // +1 for the current challenger still to be judged
+    counter.textContent = `Family ${d.fi + 1} — ${d.decided} decided, ${remaining} to go`;
+
+    const a = d.champion, b = d.challenger;
+    const imgA = a.id ? `/api/fullimage/${a.id}` : '';
+    const imgB = b.id ? `/api/fullimage/${b.id}` : '';
+    const suggested = duelSuggestedSide();
+
+    if (d.mode === 'sidebyside') {
+        stage.classList.remove('slider-mode');
+        stage.onmousemove = null;
+        stage.innerHTML = `
+            <div class="duel-pair">
+                <div class="duel-side ${suggested === 'a' ? 'suggested' : ''}" onclick="duelPick('a')">
+                    <img src="${imgA}" class="duel-img">
+                    <div class="duel-caption">A ${qualityBadge(a)}${suggested === 'a' ? ' ★ suggested' : ''}<br><span class="duel-fname">${escapeHtml(a.filename)}</span></div>
+                </div>
+                <div class="duel-side ${suggested === 'b' ? 'suggested' : ''}" onclick="duelPick('b')">
+                    <img src="${imgB}" class="duel-img">
+                    <div class="duel-caption">B ${qualityBadge(b)}${suggested === 'b' ? ' ★ suggested' : ''}<br><span class="duel-fname">${escapeHtml(b.filename)}</span></div>
+                </div>
+            </div>
+        `;
+    } else {
+        stage.classList.add('slider-mode');
+        stage.innerHTML = `
+            <div class="slider-container" id="slider-container">
+                <img src="${imgB}" class="slider-img-b" id="slider-b">
+                <img src="${imgA}" class="slider-img-a" id="slider-a">
+                <div class="slider-handle" id="slider-handle"></div>
+                <div class="slider-label-left">A: ${escapeHtml(a.filename)} ${qualityBadge(a)}${suggested === 'a' ? ' ★' : ''}</div>
+                <div class="slider-label-right">B: ${escapeHtml(b.filename)} ${qualityBadge(b)}${suggested === 'b' ? ' ★' : ''}</div>
+            </div>
+        `;
+        const container = document.getElementById('slider-container');
+        const imgA_el = document.getElementById('slider-a');
+        const handle = document.getElementById('slider-handle');
+        imgA_el.style.clipPath = 'inset(0 50% 0 0)';
+        handle.style.left = '50%';
+        container.onmousemove = (e) => {
+            const rect = container.getBoundingClientRect();
+            const pct = ((e.clientX - rect.left) / rect.width) * 100;
+            const clamped = Math.max(0, Math.min(100, pct));
+            imgA_el.style.clipPath = `inset(0 ${100 - clamped}% 0 0)`;
+            handle.style.left = clamped + '%';
+        };
+        // Dragging shouldn't accidentally register as a pick; slider mode uses buttons/keys only.
+    }
+
+    const actionbar = document.getElementById('duel-actionbar');
+    actionbar.innerHTML = `
+        <button class="btn primary" onclick="duelPick('a')">◀ Keep A</button>
+        <button class="btn" onclick="duelPick('both')">Keep Both ▼</button>
+        <button class="btn primary" onclick="duelPick('b')">Keep B ▶</button>
+    `;
+    document.getElementById('duel-undo-btn').disabled = d.history.length === 0;
+}
+
+function duelPick(side) {
+    const d = duelState;
+    if (!d || d.done) return;
+
+    // Snapshot for undo (small maps, cheap to clone).
+    d.history.push({
+        champion: d.champion,
+        challenger: d.challenger,
+        queue: [...d.queue],
+        decided: d.decided,
+        toggleSnapshot: new Map(DupeState.toggles),
+    });
+
+    let winner;
+    if (side === 'a') {
+        DupeState.toggles.set(d.challenger.rel, 'dump');
+        winner = d.champion;
+    } else if (side === 'b') {
+        DupeState.toggles.set(d.champion.rel, 'dump');
+        winner = d.challenger;
+    } else {
+        // Keep both — no elimination, champion carries the torch forward.
+        winner = d.champion;
+    }
+    d.decided++;
+
+    if (d.queue.length === 0) {
+        // Duel finished — winner is the sole survivor and is already 'keep' by default.
+        d.done = true;
+        d.champion = winner;
+        renderDuelDone();
+    } else {
+        d.champion = winner;
+        d.challenger = d.queue.shift();
+        renderDuel();
+    }
+    renderDupeFamilies(); // reflect toggle changes in the family strip live
+}
+
+function renderDuelDone() {
+    const d = duelState;
+    const stage = document.getElementById('duel-stage');
+    const counter = document.getElementById('duel-counter');
+    counter.textContent = `Family ${d.fi + 1} — done, keeper: ${d.champion.filename}`;
+    stage.classList.remove('slider-mode');
+    stage.onmousemove = null;
+    const img = d.champion.id ? `/api/fullimage/${d.champion.id}` : '';
+    stage.innerHTML = `
+        <div class="duel-done">
+            <img src="${img}" class="flip-img">
+            <div class="duel-caption">Keeper: ${escapeHtml(d.champion.filename)} ${qualityBadge(d.champion)}</div>
+        </div>
+    `;
+    document.getElementById('duel-actionbar').innerHTML = `
+        <button class="btn primary" onclick="closeDuel()">✓ Done — back to family</button>
+    `;
+}
+
+function duelUndo() {
+    const d = duelState;
+    if (!d || !d.history.length) return;
+    const prev = d.history.pop();
+    d.champion = prev.champion;
+    d.challenger = prev.challenger;
+    d.queue = prev.queue;
+    d.decided = prev.decided;
+    d.done = false;
+    DupeState.toggles = prev.toggleSnapshot;
+    renderDuel();
+    renderDupeFamilies();
+}
+
+// Wire keyboard for the duel overlay
+document.addEventListener('keydown', (e) => {
+    const overlay = document.getElementById('duel-overlay');
+    if (!overlay || !overlay.classList.contains('visible')) return;
+    if (!duelState) return;
+    if (duelState.done) {
+        if (e.key === 'Escape') { e.preventDefault(); closeDuel(); }
+        return;
+    }
+    switch (e.key) {
+        case 'ArrowLeft': e.preventDefault(); duelPick('a'); break;
+        case 'ArrowRight': e.preventDefault(); duelPick('b'); break;
+        case 'ArrowDown': e.preventDefault(); duelPick('both'); break;
+        case 'Backspace': e.preventDefault(); duelUndo(); break;
+        case 'v': case 'V': e.preventDefault(); toggleDuelMode(); break;
+        case 'Escape': e.preventDefault(); closeDuel(); break;
+    }
+});
+
+
 
 // ─── Flip / Slider Compare ─────────────────────────────────────────────
 

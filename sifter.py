@@ -910,13 +910,14 @@ def dupes_families():
             for idx in fam:
                 rel = rels[idx]
                 fp = os.path.join(pool, rel)
-                row = conn.execute("SELECT id FROM images WHERE filepath = ?", (fp,)).fetchone()
+                row = conn.execute("SELECT id, quality_score FROM images WHERE filepath = ?", (fp,)).fetchone()
                 members.append({
                     "id": row["id"] if row else None,
                     "rel": rel,
                     "filename": os.path.basename(rel),
                     "filepath": fp,
                     "min_dist": dists.get(idx),
+                    "quality_score": row["quality_score"] if row else None,
                 })
             families.append({"size": len(members), "members": members})
 
