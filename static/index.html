@@ -690,7 +690,7 @@ function loadSavedState() {
         if (saved.filters) Object.assign(State.filters, saved.filters);
         // Scrub path-like search text — a vault path pasted into the search
         // box matches no prompts and silently filters the grid to zero.
-        if (State.filters.q && /(^\\\\|^[A-Za-z]:[\\/]|^[\\/]\\)/.test(State.filters.q)) {
+        if (State.filters.q && /(^\\\\|^[A-Za-z]:[\\/])/.test(State.filters.q)) {
             State.filters.q = '';
         }
     } catch(e) {}
