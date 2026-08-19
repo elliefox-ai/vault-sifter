@@ -688,6 +688,11 @@ function loadSavedState() {
         if (saved.offset != null) State.offset = saved.offset;
         if (saved.limit != null) State.limit = saved.limit;
         if (saved.filters) Object.assign(State.filters, saved.filters);
+        // Scrub path-like search text — a vault path pasted into the search
+        // box matches no prompts and silently filters the grid to zero.
+        if (State.filters.q && /(^\\\\|^[A-Za-z]:[\\/]|^[\\/]\\)/.test(State.filters.q)) {
+            State.filters.q = '';
+        }
     } catch(e) {}
 }
 
@@ -1554,6 +1559,10 @@ async function loadVault() {
         State.cursor = 0;
         State.selected.clear();
         State.detailId = null;
+        // Drop the prompt search when switching vaults — text from the old
+        // vault (especially a pasted path) matches nothing in the new one.
+        State.filters.q = '';
+        document.getElementById('search').value = '';
         showVault();
         loadImages();
         toast(`Loaded — indexing ${r.vault} in background`);
