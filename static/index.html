@@ -578,6 +578,15 @@
             display: flex; flex-direction: column; align-items: center; gap: 12px;
         }
         #duel-undo-btn:disabled { opacity: 0.35; cursor: default; }
+        /* Chaining + persistence (workflow pass) */
+        .duel-interstitial {
+            height: 100%; display: flex; align-items: center; justify-content: center;
+            text-align: center; font-size: 17px; color: var(--text);
+            animation: duel-pop 0.22s ease-out; cursor: pointer;
+        }
+        @keyframes duel-pop { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
+        .family-card.pulse { animation: fam-pulse 1.6s ease-out; }
+        @keyframes fam-pulse { 0% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 3px transparent; } }
     </style>
 </head>
 <body>
@@ -1639,11 +1648,18 @@ const DupeState = {
 
 const MEMBER_CAP = 8; // max thumbnails per family before "+N more"
 
-function openDupes() {
+// Keep/dump marks outlive refreshes — an hour of human judgment shouldn't
+// evaporate on F5. Keyed per vault so switching pools never crosses marks.
+function saveDupeMarks() {
+    if (!DupeState.pool) return;
+    try { localStorage.setItem('vault-dupes-' + DupeState.pool, JSON.stringify([...DupeState.toggles])); } catch(e) {}
+}
+
+async function openDupes() {
     DupeState.visible = true;
     document.getElementById('dupe-panel').classList.add('visible');
     document.getElementById('btn-dupes').classList.add('active');
-    loadDupeStatus();
+    await loadDupeStatus(); // sets pool + restores persisted marks first
     loadDupeFamilies();
 }
 function closeDupes() {
@@ -1655,6 +1671,13 @@ function closeDupes() {
 async function loadDupeStatus() {
     try {
         const s = await api('/api/dupes/status');
+        if (s.pool !== DupeState.pool) {
+            DupeState.pool = s.pool;
+            try {
+                const raw = localStorage.getItem('vault-dupes-' + s.pool);
+                if (raw) for (const [rel, st] of JSON.parse(raw)) DupeState.toggles.set(rel, st);
+            } catch(e) {}
+        }
         const el = document.getElementById('dupe-status');
         el.innerHTML = `Pool: <b>${escapeHtml(s.pool)}</b> · images <b>${s.images_on_disk}</b> · hashed <b>${s.hashed}</b> · edges <b>${s.has_edges ? '✓' : '—'}</b>`;
     } catch (e) {
@@ -1758,10 +1781,8 @@ async function loadDupeFamilies() {
                 return loadDupeFamilies();
             }
         }
-        const present = new Set(data.families.flatMap(f => f.members.map(m => m.rel)));
-        for (const rel of [...DupeState.toggles.keys()]) {
-            if (!present.has(rel)) DupeState.toggles.delete(rel);
-        }
+        // No page-scoped prune: resolve paths delete their own marks, and
+        // persisted marks for other pages must survive page switches.
         renderDupeFamilies();
     } catch (e) {
         document.getElementById('dupe-families').innerHTML = `<div class="dupe-empty">⚠️ ${escapeHtml(e.message)}</div>`;
@@ -1821,7 +1842,7 @@ function renderDupeFamilies() {
             ? `<button class="btn" onclick="toggleExpandFamily(${fi})">${isExpanded ? 'Show less' : '+' + hiddenCount + ' more'}</button>`
             : '';
         return `
-        <div class="family-card">
+        <div class="family-card" data-fi="${fi}">
             <div class="family-head">
                 <span class="fname">Family ${famNumOffset + fi + 1}</span>
                 <span class="fmeta">${f.members.length} members · ${kept} keep / ${dumped} dump</span>
@@ -1848,6 +1869,7 @@ function renderDupeFamilies() {
     }
 
     list.innerHTML = exactHtml + cardsHtml + pagHtml;
+    saveDupeMarks();
 }
 
 function toggleExpandFamily(fi) {
@@ -1965,7 +1987,11 @@ function renderDuel() {
     const stage = document.getElementById('duel-stage');
     const counter = document.getElementById('duel-counter');
     const remaining = d.queue.length + 1; // +1 for the current challenger still to be judged
-    counter.textContent = `Family ${d.fi + 1} — ${d.decided} decided, ${remaining} to go`;
+    stage.onclick = null;
+    const famNum = (DupeState.page - 1) * 10 + d.fi + 1;
+    counter.textContent = `Family ${famNum} — ${d.decided} decided, ${remaining} to go`;
+    const hintEl = document.querySelector('#duel-overlay .flip-hint');
+    if (hintEl) hintEl.textContent = '← keep left · → keep right · ↓ keep both · Backspace undo';
 
     const a = d.champion, b = d.challenger;
     const imgA = a.id ? `/api/fullimage/${a.id}` : '';
@@ -2065,7 +2091,9 @@ function renderDuelDone() {
     const d = duelState;
     const stage = document.getElementById('duel-stage');
     const counter = document.getElementById('duel-counter');
-    counter.textContent = `Family ${d.fi + 1} — done, keeper: ${d.champion.filename}`;
+    stage.onclick = null;
+    const famNum = (DupeState.page - 1) * 10 + d.fi + 1;
+    counter.textContent = `Family ${famNum} — done, keeper: ${d.champion.filename}`;
     stage.classList.remove('slider-mode');
     stage.onmousemove = null;
     const img = d.champion.id ? `/api/fullimage/${d.champion.id}` : '';
@@ -2076,8 +2104,11 @@ function renderDuelDone() {
         </div>
     `;
     document.getElementById('duel-actionbar').innerHTML = `
-        <button class="btn primary" onclick="closeDuel()">✓ Done — back to family</button>
+        <button class="btn primary" onclick="duelResolveAndNext()">Resolve &amp; next ⏎</button>
+        <button class="btn" onclick="closeDuel()">Back to family</button>
     `;
+    const hintEl = document.querySelector('#duel-overlay .flip-hint');
+    if (hintEl) hintEl.textContent = '⏎ resolve & next family · Esc back to strip';
 }
 
 function duelUndo() {
@@ -2094,6 +2125,113 @@ function duelUndo() {
     renderDupeFamilies();
 }
 
+// Resolve a finished duel's family with no confirm — the duel WAS the
+// deliberation; a modal on top of it is pure friction.
+async function resolveFamilyFromDuel(fi) {
+    const fam = DupeState.families[fi];
+    if (!fam) return null;
+    const keep = fam.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'keep').map(m => m.filepath);
+    const reject = fam.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'dump').map(m => m.filepath);
+    if (!reject.length) { toast('Nothing marked to dump — all kept'); return null; }
+    try {
+        const r = await api('/api/dupes/resolve', {
+            method: 'POST',
+            body: JSON.stringify({ keep, reject }),
+        });
+        DupeState.families.splice(fi, 1);
+        for (const m of fam.members) DupeState.toggles.delete(m.rel);
+        saveDupeMarks();
+        return r;
+    } catch (e) {
+        toast('Resolve failed: ' + e.message);
+        return null;
+    }
+}
+
+function duelContenders(fam) {
+    return fam.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'keep');
+}
+
+function nextDuelableFamily(fromFi) {
+    for (let i = fromFi; i < DupeState.families.length; i++) {
+        if (duelContenders(DupeState.families[i]).length >= 2) return i;
+    }
+    return null;
+}
+
+// The "you've moved on" beat: a clear transition between chained duels
+// without stealing the keyboard from the next decision. Click to skip.
+let duelInterstitialTimer = null;
+function showDuelInterstitial(text, next) {
+    const stage = document.getElementById('duel-stage');
+    document.getElementById('duel-counter').textContent = '';
+    document.getElementById('duel-actionbar').innerHTML = '';
+    stage.classList.remove('slider-mode');
+    stage.onmousemove = null;
+    stage.innerHTML = `<div class="duel-interstitial">${escapeHtml(text)}</div>`;
+    const go = () => {
+        clearTimeout(duelInterstitialTimer);
+        if (!duelState || !stage.querySelector('.duel-interstitial')) return;
+        next();
+    };
+    stage.onclick = go;
+    clearTimeout(duelInterstitialTimer);
+    duelInterstitialTimer = setTimeout(go, 1200);
+}
+
+function pulseFamilyCard(fi) {
+    const el = document.querySelector(`.family-card[data-fi="${fi}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    el.classList.remove('pulse');
+    void el.offsetWidth;
+    el.classList.add('pulse');
+}
+
+async function finishDuelChain(msg) {
+    closeDuel();
+    loadImages();
+    if (msg) toast(msg);
+    await loadDupeFamilies();
+    pulseFamilyCard(0);
+}
+
+// Resolve the duelled family, then roll straight into the next one.
+// Resolved families splice out, so "next" starts at the same index; when
+// the page runs dry it advances (or ends the chain at the strip).
+async function duelResolveAndNext() {
+    const d = duelState;
+    if (!d || !d.done || d.resolved) return;
+    d.resolved = true;
+    const fi = d.fi;
+    const famNum = (DupeState.page - 1) * 10 + fi + 1;
+    const r = await resolveFamilyFromDuel(fi);
+    if (!r) { closeDuel(); return; }
+    // Keep the strip (hidden behind the overlay) in sync with the splice,
+    // so Esc mid-chain can't leave the DOM pointing at shifted families.
+    // Expansion state is index-keyed: drop the removed slot, shift the rest.
+    DupeState.expanded = new Set([...DupeState.expanded]
+        .filter(i => i !== fi)
+        .map(i => i > fi ? i - 1 : i));
+    renderDupeFamilies();
+    loadDupeStatus();
+    loadImages();
+    let nextFi = nextDuelableFamily(fi);
+    if (nextFi == null && DupeState.page < DupeState.totalPages) {
+        DupeState.page++;
+        DupeState.expanded.clear();
+        await loadDupeFamilies();
+        nextFi = nextDuelableFamily(0);
+    }
+    const line = `✓ Family ${famNum} resolved — ${r.kept.length} kept · ${r.trashed.length} dumped`
+        + (r.errors.length ? ` · ⚠ ${r.errors.length} errors` : '');
+    if (nextFi == null) {
+        showDuelInterstitial(line + ' — no duelable families left', () => finishDuelChain('Duel chain finished'));
+        return;
+    }
+    showDuelInterstitial(line, () => duelFamily(nextFi));
+}
+
 // Wire keyboard for the duel overlay
 document.addEventListener('keydown', (e) => {
     const overlay = document.getElementById('duel-overlay');
@@ -2101,6 +2239,7 @@ document.addEventListener('keydown', (e) => {
     if (!duelState) return;
     if (duelState.done) {
         if (e.key === 'Escape') { e.preventDefault(); closeDuel(); }
+        else if (e.key === 'Enter') { e.preventDefault(); duelResolveAndNext(); }
         return;
     }
     switch (e.key) {
@@ -2269,6 +2408,7 @@ async function resolveDupeFamily(fi) {
         toast(`Resolved: ${r.kept.length} kept, ${r.trashed.length} trashed${r.errors.length ? `, ${r.errors.length} errors` : ''}`);
         DupeState.families.splice(fi, 1);
         for (const m of fam.members) DupeState.toggles.delete(m.rel);
+        saveDupeMarks();
         loadDupeStatus();
         loadDupeFamilies();
         loadImages(); // refresh gallery (DB rows moved/deleted)
@@ -2304,6 +2444,7 @@ async function resolveAllDupeFamilies() {
             kept += r.kept.length; trashed += r.trashed.length; errors += r.errors.length;
             DupeState.families.splice(DupeState.families.indexOf(j.fam), 1);
             for (const m of j.fam.members) DupeState.toggles.delete(m.rel);
+            saveDupeMarks();
         } catch (e) {
             errors++;
             console.error(`Resolve failed for a family: ${e.message}`);

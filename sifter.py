@@ -890,6 +890,9 @@ def dupes_families():
         a, b, d = edges
 
     fams = dupefind.families_at_threshold(a, b, d, threshold)
+    # Biggest families first: most recoverable space and the heaviest
+    # judgments land while attention is freshest.
+    fams = sorted(fams, key=len, reverse=True)
     rels = sorted(hashes.keys())
 
     # Pagination: families per page (never split a family across pages)
