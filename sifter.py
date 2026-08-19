@@ -66,7 +66,8 @@ def init_db():
     DB_PATH = VAULT_HOME / db_name
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     THUMB_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), timeout=30)
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS images (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,8 +115,9 @@ def init_db():
 
 
 def get_db():
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 @contextlib.contextmanager
@@ -224,8 +226,20 @@ def extract_png_metadata(filepath):
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
+_index_lock = threading.Lock()
+
 def index_directory(vault_path, force=False):
-    """Scan a directory and index all images."""
+    """Scan a directory and index all images.
+
+    Serialized: only one indexer runs per process. Concurrent calls
+    (Load Folder spam, reindex while bg-index runs) queue instead of
+    colliding on the SQLite write lock.
+    """
+    with _index_lock:
+        return _index_directory_locked(vault_path, force)
+
+def _index_directory_locked(vault_path, force=False):
+    """Actual scan — callers must hold _index_lock."""
     vault_path = Path(vault_path).resolve()
     conn = get_db()
 
