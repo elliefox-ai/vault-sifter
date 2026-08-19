@@ -132,6 +132,19 @@ def db():
 
 def extract_png_metadata(filepath):
     """Extract prompt/workflow metadata from PNG tEXt chunks (ComfyUI format)."""
+    def _as_str(value):
+        """Coerce ComfyUI graph input values to plain strings.
+        Connected inputs serialize as [node_id, slot] lists; some loaders
+        store arrays. SQLite can't bind lists, so flatten defensively."""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, list):
+            return ", ".join(
+                _as_str(v) for v in value if not isinstance(v, (list, dict))
+            )
+        return ""
     info = {}
     try:
         from PIL import Image, ImageOps
@@ -182,18 +195,18 @@ def extract_png_metadata(filepath):
                     "CheckpointLoaderSimple", "UNETLoader", "LoraLoader"
                 ):
                     if "ckpt_name" in inputs:
-                        model = inputs["ckpt_name"]
+                        model = _as_str(inputs["ckpt_name"])
                     elif "unet_name" in inputs:
-                        model = inputs["unet_name"]
+                        model = _as_str(inputs["unet_name"])
                     elif "lora_name" in inputs and not model:
-                        model = inputs["lora_name"]
+                        model = _as_str(inputs["lora_name"])
 
                 # Capture seed
                 if "seed" in inputs:
-                    seed = str(inputs["seed"])
+                    seed = _as_str(inputs["seed"])
                 elif class_type in ("KSampler", "KSamplerAdvanced", "SamplerCustomAdvanced"):
                     if "noise_seed" in inputs:
-                        seed = str(inputs["noise_seed"])
+                        seed = _as_str(inputs["noise_seed"])
 
         info["prompt"] = prompt_text
         info["workflow"] = raw_info.get("workflow", "")
