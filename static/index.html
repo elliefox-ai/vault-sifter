@@ -693,6 +693,7 @@
             <label style="margin-left:16px;display:flex;align-items:center;gap:4px;cursor:pointer">
                 <input type="checkbox" id="hide-rejected" onchange="toggleHideRejected()"> Hide rejected
             </label>
+            <button class="btn danger" style="margin-left:auto" onclick="resolveAllDupeFamilies()">Resolve all shown</button>
         </div>
     </div>
     <div class="family-list" id="dupe-families"></div>
@@ -2255,8 +2256,11 @@ async function resolveDupeFamily(fi) {
     if (!fam) return;
     const keep = fam.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'keep').map(m => m.filepath);
     const reject = fam.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'dump').map(m => m.filepath);
-    if (!keep.length || !reject.length) { toast('Mark at least one member to dump'); return; }
-    if (!confirm(`Keep ${keep.length} → curated, dump ${reject.length}?`)) return;
+    if (!reject.length) { toast('Mark at least one member to dump'); return; }
+    const msg = keep.length
+        ? `Keep ${keep.length} → curated, dump ${reject.length}?`
+        : `Dump all ${reject.length} members (no keepers)?`;
+    if (!confirm(msg)) return;
     try {
         const r = await api('/api/dupes/resolve', {
             method: 'POST',
@@ -2271,6 +2275,44 @@ async function resolveDupeFamily(fi) {
     } catch (e) {
         toast('Resolve failed: ' + e.message);
     }
+}
+
+async function resolveAllDupeFamilies() {
+    if (!DupeState.families.length) { toast('No families shown'); return; }
+    // Snapshot decisions; skip families with nothing marked to dump.
+    const jobs = [];
+    for (const fam of DupeState.families) {
+        const keep = fam.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'keep').map(m => m.filepath);
+        const reject = fam.members.filter(m => (DupeState.toggles.get(m.rel) || 'keep') === 'dump').map(m => m.filepath);
+        if (!reject.length) continue;
+        jobs.push({ fam, keep, reject });
+    }
+    if (!jobs.length) { toast('Nothing marked to dump on this page'); return; }
+    const totalKeep = jobs.reduce((n, j) => n + j.keep.length, 0);
+    const totalDump = jobs.reduce((n, j) => n + j.reject.length, 0);
+    const msg = totalKeep
+        ? `Resolve ${jobs.length} families: keep ${totalKeep} → curated, dump ${totalDump}?`
+        : `Resolve ${jobs.length} families: dump all ${totalDump} members (no keepers)?`;
+    if (!confirm(msg)) return;
+    let kept = 0, trashed = 0, errors = 0;
+    for (const j of jobs) {
+        try {
+            const r = await api('/api/dupes/resolve', {
+                method: 'POST',
+                body: JSON.stringify({ keep: j.keep, reject: j.reject }),
+            });
+            kept += r.kept.length; trashed += r.trashed.length; errors += r.errors.length;
+            DupeState.families.splice(DupeState.families.indexOf(j.fam), 1);
+            for (const m of j.fam.members) DupeState.toggles.delete(m.rel);
+        } catch (e) {
+            errors++;
+            console.error(`Resolve failed for a family: ${e.message}`);
+        }
+    }
+    toast(`Resolved: ${kept} kept, ${trashed} trashed${errors ? `, ${errors} errors` : ''}`);
+    loadDupeStatus();
+    loadDupeFamilies();
+    loadImages();
 }
 
 // Dupe family member clicks (delegated)
